@@ -150,7 +150,7 @@ TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
 
-create4> TX-Descriptor \ must have more than two correct descriptors!
+create4> TX-Descriptor
   TDES0 ,                     \ TDES0
   SAIC:RS ,                   \ TDES1
   TX-Puffer ,                 \ TDES2
@@ -158,7 +158,7 @@ create4> TX-Descriptor \ must have more than two correct descriptors!
   0 ,                         \ TDES4: extended status
   0 ,                         \ TDES5: reserved
   0 , 0 ,                     \ TDES6+7: Timestamp low+high
-\ we won't use these descriptors, they are just dummy descriptors
+
 
 : byte. ( u -- )
   base @ hex swap
@@ -182,8 +182,7 @@ create4> TX-Descriptor \ must have more than two correct descriptors!
       5 + c@ byte. space
 ;
 
-: packetdump ( length addr )
-  swap
+: packetdump ( addr len )
   0 ?do ( addr )
       i $7 and 0= if space then \ Alle 8 Zeichen ein zusätzliches Leerzeichen
       i $F and 0= if cr then  \ Alle 16 Zeichen einen Zeilenumbruch
@@ -194,13 +193,13 @@ create4> TX-Descriptor \ must have more than two correct descriptors!
 ;
 
 
-: printpacket ( length addr -- )
-  over ." Länge " u.
-  dup      ." Ziel-MAC "  mac.
-  dup  6 + ." Quell-MAC " mac.
+: .packet ( addr len -- )
+  dup ." Länge " u.
+  over      ." Ziel-MAC "  mac.
+  over 6 + ." Quell-MAC " mac.
   ." Ethertype "
-  dup 12 + c@ byte.
-  dup 13 + c@ byte.
+  over 12 + c@ byte.
+  over 13 + c@ byte.
   cr
 
   ( length addr )
@@ -249,20 +248,18 @@ $00 c, $80 c,
     drop
 ;
 
-: set-tdesc ( -- )
-    60 SAIC:RS or
-    TX-Descriptor 4 + ! \ TDES1: Puffergröße und ein paar Flags
+: tx-buffer+ ( addr u -- )
+    \ send this block
+    SAIC:RS or TX-Descriptor 4 + 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
     TDES0:own TX-Descriptor ! \ TDES0: Zum Abschicken an den DMA übergeben
-;
+   -1 EMACTXPOLLD ! ;   \ Sendelogik anstuppsen
 
 : do-send ( -- )
     
     dint
-    -1 EMACTXPOLLD !    \ Sendelogik anstuppsen
-    ." Losschicken: " cr
+     ." Losschicken: " cr
     ." EMACDMARIS: "  emacdmaris @ hex. cr
-    TX-Descriptor 4 + @ $3FFF and
-    TX-Puffer printpacket
+    TX-Descriptor 4 + 2@ $3FFF and .packet
     
     unf tu or emacdmaris !    \ Transmit Buffer Underflow löschen
     eint
@@ -277,7 +274,7 @@ $00 c, $80 c,
     \ Puffer mit Quatsch füllen
     fill-arp
     \ Abschicken
-    set-tdesc
+    TX-Puffer 60 tx-buffer+
     do-send
 ;
 
@@ -295,8 +292,8 @@ $00 c, $80 c,
   RX-Descriptor 8 + @ hex. space 
   RX-Descriptor 12 + @ hex. cr
 
-  RX-Descriptor @ 16 rshift $3FFF and \ u.
-  RX-Puffer-1 printpacket
+  RX-Puffer-1 RX-Descriptor @ 16 rshift $3FFF and \ u.
+  .packet
 
  \ RX-Puffer-1 dump
  \ RX-Puffer-2 dump

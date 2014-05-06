@@ -138,9 +138,9 @@ TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
 
-Variable rx-head \ descriptor to add new buffers
-Variable rx-tail \ descriptor to receive buffers
-Variable tx-head \ descriptor to send new buffers
+0 Variable rx-head \ descriptor to add new buffers
+0 Variable rx-tail \ descriptor to receive buffers
+0 Variable tx-head \ descriptor to send new buffers
 
 desc-size descs# * buffer: RX-Descriptors
 desc-size descs# * buffer: TX-Descriptors

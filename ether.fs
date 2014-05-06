@@ -5,7 +5,7 @@
 \ Erste Versuche: Wegen der Puffer erstmal nur für RAM geeignet !
 \ Flashkompilationsfähigkeit wird noch nachgerüstet.
 
-compiletoram
+compiletoflash
 
 $400EC000 constant Ethernet-Base
 $400FE000 constant USB-Base \ for unique device ID
@@ -113,30 +113,18 @@ Ethernet-Base $FD8 + constant EPHYMISC      \ RW  $0000.0000 Ethernet PHY Masked
 
 1 31 lshift constant own
 
-create4> RX-Puffer-1
-  2048 allot
+1522 Constant ether-size
 
-create4> RX-Puffer-2
-  2048 allot
-
-create4> TX-Puffer
-  2048 allot
-
-create4> TX-Puffer-2
-  2048 allot
+ether-size buffer: RX-Puffer-1
+ether-size buffer: RX-Puffer-2
+ether-size buffer: TX-Puffer
+ether-size buffer: TX-Puffer-2
 
 1 15 lshift constant RER
 
-create4> RX-Descriptor
-  own ,                       \ RDES0
-  RER
-  2047 16 lshift or 
-  2047 or ,                   \ RDES1  RER: Receive end of ring, Buffer sizes: Both 2047 Bytes
-  RX-Puffer-1 ,               \ RDES2
-  RX-Puffer-2 ,               \ RDES3
-  0 ,                         \ RDES4: extended status
-  0 ,                         \ RDES5: reserved
-  0 , 0 ,                     \ RDES6+7: Timestamp low+high
+8 4 * Constant desc-size
+8 Constant descs# \ reserve 8 descriptors
+desc-size descs# * 1- Constant descs-mask
 
 1 30 lshift constant IC
 1 29 lshift constant LS  \ Last Segment of Frame
@@ -145,20 +133,22 @@ create4> RX-Descriptor
 1 21 lshift constant TER \ Transmit End of Ring
 1 17 lshift constant TTSS \ time stamp status
 
-LS FS or TTSE or TER or TTSS or Constant TDES0
+LS FS or TTSE or TTSS or Constant TDES0
 TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
 
-create4> TX-Descriptor
-  TDES0 ,                     \ TDES0
-  SAIC:RS ,                   \ TDES1
-  TX-Puffer ,                 \ TDES2
-  TX-Puffer-2 ,               \ TDES3
-  0 ,                         \ TDES4: extended status
-  0 ,                         \ TDES5: reserved
-  0 , 0 ,                     \ TDES6+7: Timestamp low+high
+Variable rx-head \ descriptor to add new buffers
+Variable rx-tail \ descriptor to receive buffers
+Variable tx-head \ descriptor to send new buffers
 
+desc-size descs# * buffer: RX-Descriptors
+desc-size descs# * buffer: TX-Descriptors
+
+: RX-Descriptor   RX-Descriptors rx-head @ + ;
+: RX-Descriptor'  RX-Descriptors rx-tail @ + ;
+: TX-Descriptor   TX-Descriptors tx-head @ + ;
+: TX-Descriptor'  TX-Descriptors tx-head @ desc-size - descs-mask and + ;
 
 : byte. ( u -- )
   base @ hex swap
@@ -224,7 +214,6 @@ $00 c, $80 c,
 : ffmac, ( addr -- addr' )   6 0 DO  $FF tc,  LOOP ;
 
 : fill-arp ( -- )
-    0 TX-Descriptor ! \ TDES0: Zum Füllen von der DMA übernehmen
     TX-Puffer
     \ Ziel-MAC-Adresse, Broadcast
     ffmac,
@@ -240,7 +229,7 @@ $00 c, $80 c,
     \ my mac
     mymac 6 t$,
     \ my ip
-    10 tc, 0 tc, 0 tc, 2 tc,
+    10 tc, 0 tc, 0 tc, mymac 5 + c@ tc,
     \ dest mac
     ffmac,
     \ dest ip
@@ -250,27 +239,34 @@ $00 c, $80 c,
 
 : tx-buffer+ ( addr u -- )
     \ send this block
+    ether-size min \ no more than 1522 bytes
     SAIC:RS or TX-Descriptor 4 + 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
-    TDES0:own TX-Descriptor ! \ TDES0: Zum Abschicken an den DMA übergeben
-   -1 EMACTXPOLLD ! ;   \ Sendelogik anstuppsen
+    TDES0:own
+    tx-head @ desc-size + descs-mask u>= TER and or
+    TX-Descriptor ! \ TDES0: Zum Abschicken an den DMA übergeben
+    -1 EMACTXPOLLD !
+    tx-head @ desc-size + descs-mask and tx-head !
+;   \ Sendelogik anstuppsen
+
+: rx-buffer+ ( addr u -- )
+    ether-size min \ no more than 1522 bytes
+    own RX-Descriptor !
+    rx-head @ desc-size + descs-mask u>= RER and or
+    RX-Descriptor 4 + 2!
+    rx-head @ desc-size + descs-mask and rx-head ! ;
 
 : do-send ( -- )
     
     dint
      ." Losschicken: " cr
     ." EMACDMARIS: "  emacdmaris @ hex. cr
-    TX-Descriptor 4 + 2@ $3FFF and .packet
+    TX-Descriptor' 4 + 2@ $3FFF and .packet
     
     unf tu or emacdmaris !    \ Transmit Buffer Underflow löschen
     eint
 ;
 
 : sp ( -- ) \ Send Packet
-    
-    \ Warte, bis der Sendepufferdescriptor frei ist...
-    \   begin TX-Descriptor @ own and 0= until
-    
-    
     \ Puffer mit Quatsch füllen
     fill-arp
     \ Abschicken
@@ -286,20 +282,22 @@ $00 c, $80 c,
 
   ." Ethernet-IRQ " hex. cr
 
+    RX-Descriptor' >r
 
-  RX-Descriptor     @ hex. space 
-  RX-Descriptor 4 + @ hex. space 
-  RX-Descriptor 8 + @ hex. space 
-  RX-Descriptor 12 + @ hex. cr
+  r@     @ hex. space 
+  r@ 4 + @ hex. space 
+  r@ 8 + @ hex. space 
+  r@ 12 + @ hex. cr
 
-  RX-Puffer-1 RX-Descriptor @ 16 rshift $3FFF and \ u.
+  r@ 8 + @ r@ @ 16 rshift $3FFF and \ u.
   .packet
 
  \ RX-Puffer-1 dump
  \ RX-Puffer-2 dump
   cr
 
-  own RX-Descriptor !
+  r> 8 + @ ether-size rx-buffer+
+  rx-tail @ desc-size + descs-mask and rx-tail !
  -1 EMACRXPOLLD !
 ;
 
@@ -335,7 +333,8 @@ $E000E10C constant en3 ( Interrupt Set Enable )
 PORTF_BASE $420 + constant PORTF_AFSEL  ( Alternate Function Select )
 PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
-: init-ethernet ( -- )
+: init ( -- )
+    init
   dint
   \ Enable MOSC and use this as system clock:
 
@@ -385,9 +384,15 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Descriptor List Address (EMACRXDLADDR) register and the Ethernet MAC Transmit
   \ Descriptor List Address (EMACTXDLADDR) register providing the DMA with the starting
   \ address of each list.
+  0 rx-head !  0 rx-tail !  0 tx-head !
+  RX-Descriptors desc-size descs# * 0 fill
+  TX-Descriptors desc-size descs# * 0 fill
+
   RX-Descriptor EMACRXDLADDR !
   TX-Descriptor EMACTXDLADDR !
 
+  \ allow two frames to be received
+  RX-Puffer-1 ether-size rx-buffer+  RX-Puffer-2 ether-size rx-buffer+
 
   \ Write to the Ethernet MAC Frame Filter (EMACFRAMEFLTR) register, the Ethernet MAC
   \ Hash Table High (EMACHASHTBLH) and the Ethernet MAC Hash Table Low
@@ -409,20 +414,8 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ or read from the PHY status register after auto-negotiation.
 
   \ Hardwired to Full-Duplex 100 Mbps here.
-
-
   1 13 lshift 2 or EMACDMAOPMODE !
 
-  \ dint
-  \ begin emacdmaris @ hex. ?key until 
-
-  \ Write to the EMACCFG register to enable the receive operation.
-  \ The Transmit and Receive engines enter the Running state and attempt to acquire descriptors
-  \ from the respective descriptor lists. The Receive and Transmit engines then begin processing
-  \ Receive and Transmit operations. The Transmit and Receive processes are independent of
-  \ each other and can be started or stopped separately.
-
-  \ RE EMACCFG bis!  \ Receiver Enable
   eint
 ;
 
@@ -440,5 +433,6 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 \ Im normalen Netzwerk mitten im Gewusel ausprobiert:
 \ Dieser Zähler wächst brav mit ankommenden Paketen. 
 
- init-ethernet
+compiletoram
 
+init

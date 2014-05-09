@@ -225,7 +225,7 @@ mealsforwholeday
 
 boot-task variable> up \ user pointer
 : next-task ( -- task )  up @ inline ;
-: save-task ( -- save )  up @ 4 + inline ;
+: save-task ( -- save )  up @ cell+ inline ;
 
 : (pause)  1 0  DO \ save I and I'
 	rp@ sp@ save-task ! \ save return stack and stack pointer

@@ -200,13 +200,52 @@ mealsforwholeday
   eint
 ;
 
-\ deferred words
+\ deferred words, works only on RAM now
 
 : >body ( cfa -- pfa ) $E + ;
 : noop ;
 : Defer ( "name" -- )  <builds ['] noop , does> @ execute ;
 : is ( xt "name" -- )
   ' >body state @ IF  literal, postpone !  ELSE  ! THEN ; immediate
+
+\ Compatibility layer for ANS standard code
+
+: variable> ( x -- ) variable ;  \ Initialised Variable
+: variable  ( -- ) 0 variable ;   \ Uninitialised Variable
+
+: (create) create ;              \ Create without action
+: create <builds does> ;          \ Create with ANS default action
+
+: cells ( n -- n ) 2 lshift 1-foldable ;
+: cell+ ( n -- n ) 4 +      1-foldable ;
+
+\ multitasker
+
+0 0 2Variable boot-task \ boot task has no extra stackspace
+
+boot-task variable> up \ user pointer
+: next-task ( -- task )  up @ inline ;
+: save-task ( -- save )  up @ 4 + inline ;
+
+: (pause)  1 0  DO \ save I and I'
+	rp@ sp@ save-task ! \ save return stack and stack pointer
+	next-task @ up !    \ switch to next task
+	save-task @ sp! rp! \ restore pointers
+	UNLOOP  EXIT  \ just restore the loop
+    LOOP ; \ close DO to make compiler happy
+
+$20 cells Constant stackspace \ 32 stack elements for a background task
+
+: task: ( "name" -- )  stackspace cell+ 2* buffer: ;
+
+: activate ( task r:continue -- )
+    r> swap >r boot-task @ r@ !
+    r@ stackspace cell+ + dup r@ cell+ !
+    dup stackspace + 2 cells - tuck swap !
+    2 cells + !  r> boot-task ! ;
+
+: init ( -- )  init
+    boot-task boot-task !  ['] (pause) hook-pause ! ;
 
 compiletoram
 init

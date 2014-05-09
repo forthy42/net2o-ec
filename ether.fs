@@ -115,8 +115,14 @@ Ethernet-Base $FD8 + constant EPHYMISC      \ RW  $0000.0000 Ethernet PHY Masked
 
 1522 Constant ether-size
 
+ether-size buffer: RX-Puffer-0
 ether-size buffer: RX-Puffer-1
 ether-size buffer: RX-Puffer-2
+ether-size buffer: RX-Puffer-3
+ether-size buffer: RX-Puffer-4
+ether-size buffer: RX-Puffer-5
+ether-size buffer: RX-Puffer-6
+ether-size buffer: RX-Puffer-7
 ether-size buffer: TX-Puffer
 ether-size buffer: TX-Puffer-2
 
@@ -138,9 +144,9 @@ TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
 
-0 Variable rx-head \ descriptor to add new buffers
-0 Variable rx-tail \ descriptor to receive buffers
-0 Variable tx-head \ descriptor to send new buffers
+0 Variable> rx-head \ descriptor to add new buffers
+0 Variable> rx-tail \ descriptor to receive buffers
+0 Variable> tx-head \ descriptor to send new buffers
 
 desc-size descs# * buffer: RX-Descriptors
 desc-size descs# * buffer: TX-Descriptors
@@ -240,11 +246,12 @@ $00 c, $80 c,
 : tx-buffer+ ( addr u -- )
     \ send this block
     ether-size min \ no more than 1522 bytes
-    SAIC:RS or TX-Descriptor 4 + 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
+    SAIC:RS or TX-Descriptor cell+ 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
     TDES0:own
     tx-head @ desc-size + descs-mask u>= TER and or
     TX-Descriptor ! \ TDES0: Zum Abschicken an den DMA übergeben
-    -1 EMACTXPOLLD !
+    unf tu or emacdmaris !    \ Transmit Buffer Underflow löschen
+    -1 EMACTXPOLLD ! \ polltx to tell TX logic to go on
     tx-head @ desc-size + descs-mask and tx-head !
 ;   \ Sendelogik anstuppsen
 
@@ -252,18 +259,13 @@ $00 c, $80 c,
     ether-size min \ no more than 1522 bytes
     own RX-Descriptor !
     rx-head @ desc-size + descs-mask u>= RER and or
-    RX-Descriptor 4 + 2!
+    RX-Descriptor cell+ 2!
     rx-head @ desc-size + descs-mask and rx-head ! ;
 
-: do-send ( -- )
-    
-    dint
+: .send ( -- )
      ." Losschicken: " cr
     ." EMACDMARIS: "  emacdmaris @ hex. cr
-    TX-Descriptor' 4 + 2@ $3FFF and .packet
-    
-    unf tu or emacdmaris !    \ Transmit Buffer Underflow löschen
-    eint
+    TX-Descriptor' cell+ 2@ $3FFF and .packet
 ;
 
 : sp ( -- ) \ Send Packet
@@ -271,13 +273,10 @@ $00 c, $80 c,
     fill-arp
     \ Abschicken
     TX-Puffer 60 tx-buffer+
-    do-send
+    .send
 ;
 
 : ethernet-handler ( -- )
-
-  EMACDMARIS @ 
-  \   1 16 lshift   1  6 lshift or EMACDMARIS !  \ Flags löschen
   -1 EMACDMARIS !
 
   ." Ethernet-IRQ " hex. cr
@@ -335,7 +334,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
 : init ( -- )
     init
-  dint
+
   \ Enable MOSC and use this as system clock:
 
   OSCRNG MOSCCTL ! \ High range for MOSC
@@ -377,22 +376,28 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   ['] ethernet-handler irq-ethernet !
   RIE NIE or EMACDMAIM ! \ Interrupts: Receive and normal interrupt summary
 
-  mymac 4 + @ EMACADDR0H !
-  mymac     @ EMACADDR0L !
+  mymac cell+ @ EMACADDR0H !
+  mymac       @ EMACADDR0L !
   
   \ Create the transmit and receive descriptor lists and then write to the Ethernet MAC Receive
   \ Descriptor List Address (EMACRXDLADDR) register and the Ethernet MAC Transmit
   \ Descriptor List Address (EMACTXDLADDR) register providing the DMA with the starting
   \ address of each list.
-  0 rx-head !  0 rx-tail !  0 tx-head !
   RX-Descriptors desc-size descs# * 0 fill
   TX-Descriptors desc-size descs# * 0 fill
 
   RX-Descriptor EMACRXDLADDR !
   TX-Descriptor EMACTXDLADDR !
 
-  \ allow two frames to be received
-  RX-Puffer-1 ether-size rx-buffer+  RX-Puffer-2 ether-size rx-buffer+
+  \ allow eight frames to be received
+  RX-Puffer-0 ether-size rx-buffer+
+  RX-Puffer-1 ether-size rx-buffer+
+  RX-Puffer-2 ether-size rx-buffer+
+  RX-Puffer-3 ether-size rx-buffer+
+  RX-Puffer-4 ether-size rx-buffer+
+  RX-Puffer-5 ether-size rx-buffer+
+  RX-Puffer-6 ether-size rx-buffer+
+  RX-Puffer-7 ether-size rx-buffer+
 
   \ Write to the Ethernet MAC Frame Filter (EMACFRAMEFLTR) register, the Ethernet MAC
   \ Hash Table High (EMACHASHTBLH) and the Ethernet MAC Hash Table Low
@@ -416,7 +421,6 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Hardwired to Full-Duplex 100 Mbps here.
   1 13 lshift 2 or EMACDMAOPMODE !
 
-  eint
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.

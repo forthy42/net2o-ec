@@ -260,7 +260,8 @@ $00 c, $80 c,
     own RX-Descriptor !
     rx-head @ desc-size + descs-mask u>= RER and or
     RX-Descriptor cell+ 2!
-    rx-head @ desc-size + descs-mask and rx-head ! ;
+    rx-head @ desc-size + descs-mask and rx-head !
+    -1 EMACRXPOLLD ! ;
 
 : .send ( -- )
      ." Losschicken: " cr
@@ -277,27 +278,36 @@ $00 c, $80 c,
 ;
 
 : ethernet-handler ( -- )
-  -1 EMACDMARIS !
+    -1 EMACDMARIS ! ;
 
-  ." Ethernet-IRQ " hex. cr
+task: ethernet-task
 
-    RX-Descriptor' >r
+: rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
-  r@     @ hex. space 
-  r@ 4 + @ hex. space 
-  r@ 8 + @ hex. space 
-  r@ 12 + @ hex. cr
+: ethernet& ( -- )
+    ethernet-task activate
+    BEGIN
+	BEGIN  pause RX-Descriptor' @ own and 0=  UNTIL
+	
+	." Ethernet-IRQ " hex. cr
+	
+	RX-Descriptor' >r
+	
+	r@     @ hex. space 
+	r@ 4 + @ hex. space 
+	r@ 8 + @ hex. space 
+	r@ 12 + @ hex. cr
+	
+	r@ 8 + @ r@ @ 16 rshift $3FFF and \ u.
+	.packet
 
-  r@ 8 + @ r@ @ 16 rshift $3FFF and \ u.
-  .packet
-
- \ RX-Puffer-1 dump
- \ RX-Puffer-2 dump
-  cr
-
-  r> 8 + @ ether-size rx-buffer+
-  rx-tail @ desc-size + descs-mask and rx-tail !
- -1 EMACRXPOLLD !
+	\ RX-Puffer-1 dump
+	\ RX-Puffer-2 dump
+	cr
+	
+	r> 8 + @ ether-size rx-buffer+
+	rx-tail+
+    AGAIN
 ;
 
 
@@ -421,6 +431,8 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Hardwired to Full-Duplex 100 Mbps here.
   1 13 lshift 2 or EMACDMAOPMODE !
 
+  \ start background task
+  ethernet&
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.

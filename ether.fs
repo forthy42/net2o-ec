@@ -113,7 +113,7 @@ Ethernet-Base $FD8 + constant EPHYMISC      \ RW  $0000.0000 Ethernet PHY Masked
 
 1 31 lshift constant own
 
-1522 Constant ether-size
+1524 Constant ether-size \ aligned to 4
 
 ether-size buffer: RX-Puffer-0
 ether-size buffer: RX-Puffer-1
@@ -284,27 +284,48 @@ task: ethernet-task
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
+: dump-rx ( desc -- )
+    >r r@ 8 + @ r> @ 16 rshift $3FFF and \ u.
+    .packet cr ;
+
+: rx-ip ( desc -- )
+    ." IP packet received" cr dump-rx ;
+: rx-ipv6 ( desc -- )
+    ." IPv6 packet received" cr dump-rx ;
+: rx-arp ( desc -- )
+    ." ARP packet received" cr dump-rx ;
+
+' dump-rx 0
+' dump-rx 0
+' dump-rx 0
+' dump-rx 0
+' dump-rx 0
+10 nvariable free-ethertypes
+
+' rx-arp  $0806
+' rx-ipv6 $86DD
+' rx-ip   $0800
+6 nvariable ethertypes
+
+: bounds ( addr len -- end start ) over + swap ;
+
+: rx-ethertype ( descriptor ethertype -- )
+    ethertypes 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop dump-rx ;
+
+: handle-rx ( descriptor -- )
+    dup 8 + @ 12 + dup c@ 8 lshift swap 1+ c@ or
+    rx-ethertype ;	
+
 : ethernet& ( -- )
     ethernet-task activate
     BEGIN
 	BEGIN  pause RX-Descriptor' @ own and 0=  UNTIL
-	
-	." Ethernet-IRQ " hex. cr
-	
-	RX-Descriptor' >r
-	
-	r@     @ hex. space 
-	r@ 4 + @ hex. space 
-	r@ 8 + @ hex. space 
-	r@ 12 + @ hex. cr
-	
-	r@ 8 + @ r@ @ 16 rshift $3FFF and \ u.
-	.packet
 
-	\ RX-Puffer-1 dump
-	\ RX-Puffer-2 dump
-	cr
-	
+	RX-Descriptor' dup >r handle-rx
 	r> 8 + @ ether-size rx-buffer+
 	rx-tail+
     AGAIN
@@ -349,7 +370,9 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
   OSCRNG MOSCCTL ! \ High range for MOSC
 
-  50 0 do loop \ Wait for clocks to be stable
+  \ while we wait for the clock to stabilize...
+  RX-Descriptors desc-size descs# * 0 fill
+  TX-Descriptors desc-size descs# * 0 fill
 
   3 20 lshift RSCLKCFG ! \ MOSC as oscillator
 
@@ -358,7 +381,11 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   1 RCGCEMAC !
   1 RCGCEPHY !
 
-  50 0 do loop \ Wait for clocks to be stable
+  \ while we wait for the clock to stabilize...
+  \ allow eight frames to be received
+  rx-puffer-7 rx-puffer-0 do
+      i ether-size rx-buffer+
+  ether-size negate +loop
 
   1 PCEMAC ! \ Enable EMAC
   1 PCEPHY ! \ Enable EPHY
@@ -393,21 +420,10 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Descriptor List Address (EMACRXDLADDR) register and the Ethernet MAC Transmit
   \ Descriptor List Address (EMACTXDLADDR) register providing the DMA with the starting
   \ address of each list.
-  RX-Descriptors desc-size descs# * 0 fill
-  TX-Descriptors desc-size descs# * 0 fill
 
   RX-Descriptor EMACRXDLADDR !
   TX-Descriptor EMACTXDLADDR !
 
-  \ allow eight frames to be received
-  RX-Puffer-0 ether-size rx-buffer+
-  RX-Puffer-1 ether-size rx-buffer+
-  RX-Puffer-2 ether-size rx-buffer+
-  RX-Puffer-3 ether-size rx-buffer+
-  RX-Puffer-4 ether-size rx-buffer+
-  RX-Puffer-5 ether-size rx-buffer+
-  RX-Puffer-6 ether-size rx-buffer+
-  RX-Puffer-7 ether-size rx-buffer+
 
   \ Write to the Ethernet MAC Frame Filter (EMACFRAMEFLTR) register, the Ethernet MAC
   \ Hash Table High (EMACHASHTBLH) and the Ethernet MAC Hash Table Low

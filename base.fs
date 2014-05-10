@@ -203,8 +203,7 @@ mealsforwholeday
 \ deferred words, works only on RAM now
 
 : >body ( cfa -- pfa ) $E + ;
-: noop ;
-: Defer ( "name" -- )  <builds ['] noop , does> @ execute ;
+: Defer ( "name" -- )  <builds ['] nop , does> @ execute ;
 : is ( xt "name" -- )
   ' >body state @ IF  literal, postpone !  ELSE  ! THEN ; immediate
 
@@ -216,16 +215,17 @@ mealsforwholeday
 : (create) create ;              \ Create without action
 : create <builds does> ;          \ Create with ANS default action
 
-: cells ( n -- n ) 2 lshift 1-foldable ;
-: cell+ ( n -- n ) 4 +      1-foldable ;
+: cells ( n -- n ) 2 lshift inline 1-foldable ;
+: cell+ ( n -- n ) 4 +      inline 1-foldable ;
 
 \ multitasker
 
-0 0 2Variable boot-task \ boot task has no extra stackspace
+0 0 0 3 nvariable boot-task \ boot task has no extra stackspace
 
 boot-task variable> up \ user pointer
 : next-task ( -- task )  up @ inline ;
-: save-task ( -- save )  up @ 4 + inline ;
+: save-task ( -- save )  up @ cell+ inline ;
+: handler ( -- handler ) up @ cell+ cell+ inline ;
 
 : (pause)  1 0  DO \ save I and I'
 	rp@ sp@ save-task ! \ save return stack and stack pointer
@@ -236,16 +236,29 @@ boot-task variable> up \ user pointer
 
 $20 cells Constant stackspace \ 32 stack elements for a background task
 
-: task: ( "name" -- )  stackspace cell+ 2* buffer: ;
+: task: ( "name" -- )  stackspace cell+ 2* cell+ buffer: ;
 
 : activate ( task r:continue -- )
     r> swap >r boot-task @ r@ !
-    r@ stackspace cell+ + dup r@ cell+ !
+    r@ stackspace cell+ cell+ + dup r@ cell+ !
     dup stackspace + 2 cells - tuck swap !
     2 cells + !  r> boot-task ! ;
 
-: init ( -- )  init
-    boot-task boot-task !  ['] (pause) hook-pause ! ;
+: multitask ( -- ) ['] (pause) hook-pause ! ;
+: singletask ( -- ) ['] nop hook-pause ! ;
+
+: init ( -- )  init  boot-task boot-task !  multitask ;
+
+\ exception handling
+
+: catch ( x1 .. xn xt -- y1 .. yn throwcode / z1 .. zm 0 )
+    1 0 DO  sp@ >r handler @ >r rp@ handler !  execute
+	r> handler !  rdrop
+	0 UNLOOP  EXIT  LOOP ;
+: throw ( throwcode -- )  dup IF
+	handler @ rp! r> handler ! r> swap >r sp! drop r>
+	UNLOOP  EXIT
+    ELSE  drop  THEN ;
 
 compiletoram
 init

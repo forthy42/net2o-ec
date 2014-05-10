@@ -1,9 +1,7 @@
-
 \ Ethernet driver for TM4C1294
-\   needs basisdefinitions.txt
+\   needs base.fs
 
-\ Erste Versuche: Wegen der Puffer erstmal nur für RAM geeignet !
-\ Flashkompilationsfähigkeit wird noch nachgerüstet.
+\ Is flashable
 
 compiletoflash
 
@@ -190,16 +188,18 @@ desc-size descs# * buffer: TX-Descriptors
 
 
 : .packet ( addr len -- )
-  dup ." Länge " u.
-  over      ." Ziel-MAC "  mac.
-  over 6 + ." Quell-MAC " mac.
-  ." Ethertype "
-  over 12 + c@ byte.
-  over 13 + c@ byte.
-  cr
-
-  ( length addr )
-  packetdump
+    singletask
+    dup ." Länge " u.
+    over      ." Ziel-MAC "  mac.
+    over 6 + ." Quell-MAC " mac.
+    ." Ethertype "
+    over 12 + c@ byte.
+    over 13 + c@ byte.
+    cr
+    
+    ( length addr )
+    packetdump
+    multitask
 ;
 
 
@@ -211,6 +211,7 @@ create4> mymac  $00 c, $1A c, $B6 c,
 uniqueid0 @ dup c, 8 rshift dup c,
 uniqueid3 3 + c@ c, \ use unique ID
 $00 c, $80 c,
+create4> myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 
 : tc, ( addr char -- addr' )  over c! 1+ ;
 : tw, ( addr word -- addr' )  >r r@ 8 rshift tc, r> tc, ;
@@ -235,7 +236,7 @@ $00 c, $80 c,
     \ my mac
     mymac 6 t$,
     \ my ip
-    10 tc, 0 tc, 0 tc, mymac 5 + c@ tc,
+    myip 4 t$,
     \ dest mac
     ffmac,
     \ dest ip
@@ -263,7 +264,7 @@ $00 c, $80 c,
     rx-head @ desc-size + descs-mask and rx-head !
     -1 EMACRXPOLLD ! ;
 
-: .send ( -- )
+: .send ( -- ) singletask
      ." Losschicken: " cr
     ." EMACDMARIS: "  emacdmaris @ hex. cr
     TX-Descriptor' cell+ 2@ $3FFF and .packet
@@ -284,16 +285,37 @@ task: ethernet-task
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
-: dump-rx ( desc -- )
-    >r r@ 8 + @ r> @ 16 rshift $3FFF and \ u.
-    .packet cr ;
+: desc@ ( desc -- addr u )
+    >r r@ 8 + @ r> @ 16 rshift $3FFF and ;
+
+: dump-rx ( desc -- ) desc@ .packet cr ;
 
 : rx-ip ( desc -- )
     ." IP packet received" cr dump-rx ;
 : rx-ipv6 ( desc -- )
     ." IPv6 packet received" cr dump-rx ;
-: rx-arp ( desc -- )
-    ." ARP packet received" cr dump-rx ;
+
+\ arp protocol: reply to requests (no caching and doing our own requests)
+
+: >reply ( addr u -- addr u )
+    over dup 6 + swap 6 move ;
+
+: arp-rx? ( addr u -- ) over 14 + >r
+    r@ 2@ $01000406 $00080100 d= \ is it an arp request?
+    myip @ r@ 24 + @ = and       \ is it actually for our IP?
+    IF \ arp request for us: do in-place reply
+	>reply  r> 7 + 2 tc,     \ set reply flag
+	dup dup 10 + 10 move     \ move request tuple to reply tuple
+	mymac 6 t$, myip 4 t$,   \ set my mac
+	2drop 42 tx-buffer+      \ reply it
+    ELSE
+	." ARP unknown packet received" cr
+	rdrop .packet cr
+    THEN ;
+
+: rx-arp ( desc -- )  desc@ arp-rx? ;
+
+\ ethernet handler
 
 ' dump-rx 0
 ' dump-rx 0

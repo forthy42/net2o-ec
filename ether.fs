@@ -220,30 +220,6 @@ create4> myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 
 : ffmac, ( addr -- addr' )   6 0 DO  $FF tc,  LOOP ;
 
-: fill-arp ( -- )
-    TX-Puffer
-    \ Ziel-MAC-Adresse, Broadcast
-    ffmac,
-  \ Quell-MAC-Adresse, wird ersetzt
-    ffmac,
-
-    \ Ethertype: ARP
-    $0806 tw,
-
-    \ Rest im Puffer: ARP-Request, damit wir auch eine Antwort kriegen
-    1 tw, $800 tw,
-    6 tc, 4 tc,  0 tc, 1 tc,
-    \ my mac
-    mymac 6 t$,
-    \ my ip
-    myip 4 t$,
-    \ dest mac
-    ffmac,
-    \ dest ip
-    10 tc, 0 tc, 0 tc, 1 tc,
-    drop
-;
-
 : tx-buffer+ ( addr u -- )
     \ send this block
     ether-size min \ no more than 1522 bytes
@@ -270,14 +246,6 @@ create4> myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
     TX-Descriptor' cell+ 2@ $3FFF and .packet
 ;
 
-: sp ( -- ) \ Send Packet
-    \ Puffer mit Quatsch füllen
-    fill-arp
-    \ Abschicken
-    TX-Puffer 60 tx-buffer+
-    .send
-;
-
 : ethernet-handler ( -- )
     -1 EMACDMARIS ! ;
 
@@ -297,23 +265,59 @@ task: ethernet-task
 
 \ arp protocol: reply to requests (no caching and doing our own requests)
 
+10 constant /arp
+16 constant arp-cache#
+/arp arp-cache# * buffer: arp-cache
+Variable arp#
+: arp-cache+ ( addr u -- )
+    arp-cache arp# @ + swap move
+    /arp arp# @ + dup /arp arp-cache# * u< and arp# ! ;
+: ip>mac ( ip-addr -- macaddr/0 )  @
+    arp-cache /arp arp-cache# * bounds DO
+	dup i 6 + @ = IF  drop I  UNLOOP  EXIT  THEN
+    /arp +LOOP  drop 0 ;
+
 : >reply ( addr u -- addr u )
     over dup 6 + swap 6 move ;
 
-: arp-rx? ( addr u -- ) over 14 + >r
+: rx-arp ( -- ) desc@ over 14 + >r
     r@ 2@ $01000406 $00080100 d= \ is it an arp request?
     myip @ r@ 24 + @ = and       \ is it actually for our IP?
     IF \ arp request for us: do in-place reply
 	>reply  r> 7 + 2 tc,     \ set reply flag
 	dup dup 10 + 10 move     \ move request tuple to reply tuple
 	mymac 6 t$, myip 4 t$,   \ set my mac
-	2drop 42 tx-buffer+      \ reply it
-    ELSE
-	." ARP unknown packet received" cr
-	rdrop .packet cr
-    THEN ;
+	2drop 42 tx-buffer+ EXIT \ reply it
+    THEN
+    r@ 2@ $02000406 $00080100 d= \ is it an arp reply?
+    IF
+	r> 8 + 10 arp-cache+  EXIT
+    THEN
+    ." ARP unknown packet received" cr
+    rdrop .packet cr ;
 
-: rx-arp ( desc -- )  desc@ arp-rx? ;
+: fill-arp1 ( -- ) \ generic ARP request
+    TX-Puffer
+    \ Ziel-MAC-Adresse, Broadcast
+    ffmac,
+    \ Quell-MAC-Adresse, wird ersetzt
+    ffmac,
+
+    \ Ethertype: ARP
+    $0806 tw,
+    \ Rest im Puffer: ARP-Request, damit wir auch eine Antwort kriegen
+    1 tw, $800 tw, $06040001 tl,
+    \ my mac     my ip       my mac       my ip
+    mymac 6 t$,  myip 4 t$, ;
+
+: grat-arp ( -- ) \ Send Packet
+    \ fill buffer with gratious arp information
+    fill-arp1  mymac 6 t$,  myip 4 t$,  drop
+    TX-Puffer 42 tx-buffer+ ;
+
+: req-arp ( ip-addr -- ) >r
+    fill-arp1  ffmac,  r> tl,  drop
+    TX-Puffer 42 tx-buffer+ ;
 
 \ ethernet handler
 
@@ -328,8 +332,6 @@ task: ethernet-task
 ' rx-ipv6 $86DD
 ' rx-ip   $0800
 6 nvariable ethertypes
-
-: bounds ( addr len -- end start ) over + swap ;
 
 : rx-ethertype ( descriptor ethertype -- )
     ethertypes 16 cells bounds do
@@ -393,8 +395,9 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   OSCRNG MOSCCTL ! \ High range for MOSC
 
   \ while we wait for the clock to stabilize...
-  RX-Descriptors desc-size descs# * 0 fill
-  TX-Descriptors desc-size descs# * 0 fill
+    RX-Descriptors desc-size descs# * 0 fill
+    TX-Descriptors desc-size descs# * 0 fill
+    arp-cache /arp arp-cache# *       0 fill
 
   3 20 lshift RSCLKCFG ! \ MOSC as oscillator
 

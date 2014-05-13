@@ -247,8 +247,6 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 : multitask ( -- ) ['] (pause) hook-pause ! ;
 : singletask ( -- ) ['] nop hook-pause ! ;
 
-: init ( -- )  init  boot-task boot-task !  multitask ;
-
 \ exception handling
 
 : catch ( x1 .. xn xt -- y1 .. yn throwcode / z1 .. zm 0 )
@@ -260,5 +258,18 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 	UNLOOP  EXIT
     ELSE  drop  THEN ;
 
+: quit-loop ( -- )  BEGIN  query interpret ."  ok" cr  AGAIN ;
+: quit-catch ( -- )  BEGIN ['] quit-loop catch
+	dup IF  ." Throw: " . cr  ELSE  drop  THEN  AGAIN ;
+
+: sysfault ( -- ) -9 throw ;
+
+: init ( -- )
+    init  boot-task boot-task !  multitask
+\    ['] sysfault irq-systick 8 cells +
+\    2dup ! cell+ 2dup ! cell+ 2dup ! cell+ !
+    ['] quit-catch hook-quit ! ;
+
 compiletoram
 init
+quit

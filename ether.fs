@@ -102,12 +102,7 @@ Ethernet-Base $FD8 + constant EPHYMISC      \ RW  $0000.0000 Ethernet PHY Masked
 1 16 lshift constant NIE
 1  6 lshift constant RIE
 
-
 \ Dies geht natürlich nur, während ins RAM kompiliert wird. Später Pufferinitialisationen für Flash entwickeln.
-
-: even4 ( u -- u ) dup 1 and + dup 2 and + ;
-: align4, ( -- ) here 1 and if 0 c, then here 2 and if 0 h, then ;
-: create4> <builds ( -- ) align4,  does> ( -- addr ) even4  ;
 
 1 31 lshift constant own
 
@@ -134,10 +129,11 @@ desc-size descs# * 1- Constant descs-mask
 1 29 lshift constant LS  \ Last Segment of Frame
 1 28 lshift constant FS  \ First Segment of Frame
 1 25 lshift constant TTSE \ time stamp enable
+3 22 lshift constant CIC:cs \ IP header checksum insertion
 1 21 lshift constant TER \ Transmit End of Ring
 1 17 lshift constant TTSS \ time stamp status
 
-LS FS or TTSE or TTSS or Constant TDES0
+LS FS or TTSE or CIC:cs or TTSS or Constant TDES0
 TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
@@ -207,11 +203,11 @@ desc-size descs# * buffer: TX-Descriptors
 1 5 lshift constant UNF \ Transmit Underflow
 1 2 lshift constant TU \ Transmit Unavailabl
 
-create4> mymac  $00 c, $1A c, $B6 c,
+create mymac  $00 c, $1A c, $B6 c,
 uniqueid0 @ dup c, 8 rshift dup c,
 uniqueid3 3 + c@ c, \ use unique ID
 $00 c, $80 c,
-create4> myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
+create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 
 : tc, ( addr char -- addr' )  over c! 1+ ;
 : tw, ( addr word -- addr' )  >r r@ 8 rshift tc, r> tc, ;
@@ -387,57 +383,63 @@ $E000E10C constant en3 ( Interrupt Set Enable )
 PORTF_BASE $420 + constant PORTF_AFSEL  ( Alternate Function Select )
 PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
-: init ( -- )
-    init
+: clocks-enable ( -- )
+    \ Enable MOSC and use this as system clock:
 
-  \ Enable MOSC and use this as system clock:
+    OSCRNG MOSCCTL ! \ High range for MOSC
+    
+    \ while we wait for the clock to stabilize...
+    50 0 do  loop
+    
+    3 20 lshift RSCLKCFG ! \ MOSC as oscillator
+    
+    \ Enable clock for Ethernet:
 
-  OSCRNG MOSCCTL ! \ High range for MOSC
+    1 RCGCEMAC !  1 RCGCEPHY ! ;
 
-  \ while we wait for the clock to stabilize...
+: descs-setup ( -- )
     RX-Descriptors desc-size descs# * 0 fill
     TX-Descriptors desc-size descs# * 0 fill
     arp-cache /arp arp-cache# *       0 fill
 
-  3 20 lshift RSCLKCFG ! \ MOSC as oscillator
+    \ allow eight frames to be received
+    rx-puffer-7 rx-puffer-0 do
+	i ether-size rx-buffer+
+    ether-size negate +loop ;
 
-  \ Enable clock for Ethernet:
+: enable-emac ( -- )
+    1 PCEMAC ! \ Enable EMAC
+    1 PCEPHY ! \ Enable EPHY
+;
 
-  1 RCGCEMAC !
-  1 RCGCEPHY !
+: reset-emac ( -- )
+    \ Write to the Ethernet MAC DMA Bus Mode (EMACDMABUSMOD) register to set Host bus parameters.
+    
+    ." Reset Ethernet" cr
+    1 EMACDMABUSMOD ! \ Reset MAC
+    begin EMACDMABUSMOD @ 1 and not until \ Wait for Reset to complete
+    ." Reset complete" cr
+    EMACDMABUSMOD @ ATDS or EMACDMABUSMOD ! ;
 
-  \ while we wait for the clock to stabilize...
-  \ allow eight frames to be received
-  rx-puffer-7 rx-puffer-0 do
-      i ether-size rx-buffer+
-  ether-size negate +loop
-
-  1 PCEMAC ! \ Enable EMAC
-  1 PCEPHY ! \ Enable EPHY
-
-  \ Write to the Ethernet MAC DMA Bus Mode (EMACDMABUSMOD) register to set Host bus parameters.
-
-  ." Reset Ethernet" cr
-  1 EMACDMABUSMOD ! \ Reset MAC
-  begin EMACDMABUSMOD @ 1 and not until \ Wait for Reset to complete
-  ." Reset complete" cr
-  EMACDMABUSMOD @ ATDS or EMACDMABUSMOD !
-
+: emac-leds ( -- )
   \ Set Ethernet LEDs on Port F:
-    $11  PORTF_AFSEL !
-  $50005 PORTF_PCTL !
+     $11  PORTF_AFSEL !
+  $50005 PORTF_PCTL ! ;
 
-  \ Write to the Ethernet MAC DMA Interrupt Mask Register (EMACDMAIM) register to mask unnecessary interrupt causes.
-
-  \ Radikal erstmal alle Interrupts global aktivieren
+: emac-irqs ( -- )
+    \ Radikal erstmal alle Interrupts global aktivieren
   -1 en0 !
   -1 en1 !
   -1 en2 !
   -1 en3 !
 
   ['] ethernet-handler irq-ethernet !
-  RIE NIE or EMACDMAIM ! \ Interrupts: Receive and normal interrupt summary
+  \ Write to the Ethernet MAC DMA Interrupt Mask Register (EMACDMAIM) register to mask unnecessary interrupt causes.
 
+  RIE NIE or EMACDMAIM ! \ Interrupts: Receive and normal interrupt summary
+;
+
+: emac-init ( -- )
   mymac cell+ @ EMACADDR0H !
   mymac       @ EMACADDR0L !
   
@@ -448,7 +450,6 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
   RX-Descriptor EMACRXDLADDR !
   TX-Descriptor EMACTXDLADDR !
-
 
   \ Write to the Ethernet MAC Frame Filter (EMACFRAMEFLTR) register, the Ethernet MAC
   \ Hash Table High (EMACHASHTBLH) and the Ethernet MAC Hash Table Low
@@ -469,16 +470,18 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Program Bit 15 (PS) and Bit 11 (DM) of the EMACCFG register based on the line status received
   \ or read from the PHY status register after auto-negotiation.
 
-  \ Hardwired to Full-Duplex 100 Mbps here.
-  1 13 lshift 2 or EMACDMAOPMODE !
+  \ Hardwired to Full-Duplex, store&forward, 100 Mbps here.
+  1 21 lshift 1 13 lshift or 2 or EMACDMAOPMODE ! ;
 
-  \ start background task
-  ethernet&
+: init ( -- )
+    init
+    clocks-enable  descs-setup  enable-emac
+    reset-emac  emac-leds  emac-irqs  emac-init
+    \ start background task
+    ethernet&
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.
-\ Jetzt gibt es allerdings immer noch keine Interrupts für einkommende Pakete.
-\ Irgendetwas stimmt noch nicht...
 
 : pi ( -- ) \  Ethernet MAC Receive Frame Count for Good and Bad Frames.
   EMACRXCNTGB @ u.

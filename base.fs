@@ -218,9 +218,15 @@ mealsforwholeday
 : cells ( n -- n ) 2 lshift inline 1-foldable ;
 : cell+ ( n -- n ) 4 +      inline 1-foldable ;
 
+\ field
+
+: +field ( offset size "name" -- )  <builds over , + does> @ + ;
+: cfield: ( u1 "name" -- u2 )  1 +field ;
+: field: ( u1 "name" -- u2 )   aligned cell +field ;
+
 \ multitasker
 
-0 0 0 3 nvariable boot-task \ boot task has no extra stackspace
+0 0 flashvar-here 3 cells - 3 nvariable boot-task \ boot task has no extra stackspace
 
 boot-task variable> up \ user pointer
 : next-task ( -- task )  up @ inline ;
@@ -265,10 +271,9 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 : sysfault ( -- ) -9 throw ;
 
 : init ( -- )
-    init  boot-task boot-task !  multitask
-\    ['] sysfault irq-systick 8 cells +
-\    2dup ! cell+ 2dup ! cell+ 2dup ! cell+ !
-    ['] quit-catch hook-quit ! ;
+    init  multitask
+    ['] quit-catch hook-quit !
+    ['] sysfault irq-fault ! ;
 
 compiletoram
 init

@@ -150,6 +150,37 @@ desc-size descs# * buffer: TX-Descriptors
 : TX-Descriptor   TX-Descriptors tx-head @ + ;
 : TX-Descriptor'  TX-Descriptors tx-head @ desc-size - descs-mask and + ;
 
+\ ip header offsets
+
+0
+6 +field eth-dest
+6 +field eth-src
+2 +field eth-type
+dup Constant ether-header#
+1 +field ip-version
+1 +field ip-tos
+2 +field ip-len
+2 +field ip-id
+2 +field ip-frag
+1 +field ip-ttl
+1 +field ip-protocol
+2 +field ip-hdrcs
+4 +field ip-src
+4 +field ip-dest
+dup Constant ip-header#
+2 +field udp-src
+2 +field udp-dest
+2 +field udp-len
+2 +field udp-cs
+Constant udp-header#
+ip-header#
+1 +field icmp-type
+1 +field icmp-code
+2 +field icmp-cs
+Constant icmp-header#
+
+\ dump a packet
+
 : byte. ( u -- )
   base @ hex swap
   0 <# # # #> type
@@ -182,16 +213,12 @@ desc-size descs# * buffer: TX-Descriptors
   cr
 ;
 
-
 : .packet ( addr len -- )
     singletask
     dup ." Länge " u.
-    over      ." Ziel-MAC "  mac.
-    over 6 + ." Quell-MAC " mac.
-    ." Ethertype "
-    over 12 + c@ byte.
-    over 13 + c@ byte.
-    cr
+    over eth-dest ." Ziel-MAC "  mac.
+    over eth-src  ." Quell-MAC " mac.
+    ." Ethertype " over eth-type dup c@ byte. 1+ c@ byte. cr
     
     ( length addr )
     packetdump
@@ -254,8 +281,6 @@ task: ethernet-task
 
 : dump-rx ( desc -- ) desc@ .packet cr ;
 
-: rx-ip ( desc -- )
-    ." IP packet received" cr dump-rx ;
 : rx-ipv6 ( desc -- )
     ." IPv6 packet received" cr dump-rx ;
 
@@ -276,7 +301,7 @@ Variable arp#
 : >reply ( addr u -- addr u )
     over dup 6 + swap 6 move ;
 
-: rx-arp ( -- ) desc@ over 14 + >r
+: rx-arp ( desc -- ) desc@ over 14 + >r
     r@ 2@ $01000406 $00080100 d= \ is it an arp request?
     myip @ r@ 24 + @ = and       \ is it actually for our IP?
     IF \ arp request for us: do in-place reply
@@ -315,6 +340,76 @@ Variable arp#
     fill-arp1  ffmac,  r> tl,  drop
     TX-Puffer 42 tx-buffer+ ;
 
+\ IP header debugging
+
+: be-w@ ( addr -- w )  count >r c@ r> 8 lshift or ;
+: be-w! ( w addr -- )  over 8 rshift over c! 1+ c! ;
+: be-l@ ( addr -- l )  count >r count >r count >r c@
+    r> 8 lshift or  r> 16 lshift or r> 24 lshift or ;
+
+: .iphdr ( addr len -- addr len )  singletask
+    ." IP packet received" cr
+    ." Ethernet length: " dup >r . cr
+    ." IP length: " dup ip-len be-w@ . cr
+    ." IP type: " dup ip-protocol c@ . cr
+    r> ;
+
+: .ippacket ( addr len -- )  .iphdr .packet cr ;
+
+\ icmp
+
+: ip-reply ( addr destaddr -- addr destaddr' )
+    over eth-src over eth-dest 6 move eth-src ffmac,
+    $800 tw, over ip-version over 10 move 10 + 0 tw, \ checksum 0
+    over ip-dest over 4 move 4 +
+    over ip-src  over 4 move 4 + ;
+
+\ : >carries ( n -- n' )
+\     dup 16 rshift swap $FFFF and + ;
+\ : ip-cs ( addr u -- cs )
+\     0 -rot bounds ?DO  I be-w@ +  2 +LOOP  >carries >carries
+\     $FFFF xor ;
+
+: icmp-rx ( addr len -- )
+    over icmp-type c@ 8 = IF
+	icmp-header# - 4 - >r TX-Puffer ip-reply
+	0 tl, \ type 0, code 0, cs not set
+	over icmp-header# + over r@ move \ copy rest
+	2drop \ the engine calculates the header for us
+	\ dup 4 - r@ 4 + ip-cs swap 2 - over hex. dup hex. cr be-w!
+	TX-Puffer r> icmp-header# + tx-buffer+
+    ELSE
+	singletask
+	." ICMP received" cr
+	.ippacket
+    THEN ;
+
+\ udp
+
+: udp-rx ( addr len -- )  singletask
+    ." UDP received" cr .ippacket ;
+
+\ ip handler
+
+' .ippacket 0
+' .ippacket 0
+' .ippacket 0
+' .ippacket 0
+' .ippacket 0
+10 nvariable free-iptypes
+
+' .ippacket 0
+' udp-rx 17
+' icmp-rx 1
+6 nvariable iptypes
+
+: rx-ip ( desc -- ) desc@ over ip-protocol c@
+    iptypes 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop .ippacket ;
+
 \ ethernet handler
 
 ' dump-rx 0
@@ -337,8 +432,7 @@ Variable arp#
     2 cells  +loop  drop dump-rx ;
 
 : handle-rx ( descriptor -- )
-    dup 8 + @ 12 + dup c@ 8 lshift swap 1+ c@ or
-    rx-ethertype ;	
+    dup 8 + @ eth-type be-w@ rx-ethertype ;	
 
 : ethernet& ( -- )
     ethernet-task activate

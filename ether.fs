@@ -361,7 +361,7 @@ Variable arp#
 : ip-reply ( addr destaddr -- addr destaddr' )
     over eth-src over eth-dest 6 move eth-src ffmac,
     $800 tw, over ip-version over 10 move 10 + 0 tw, \ checksum 0
-    over ip-dest over 4 move 4 +
+    myip over 4 move 4 +
     over ip-src  over 4 move 4 + ;
 
 \ : >carries ( n -- n' )

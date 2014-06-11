@@ -273,7 +273,7 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 : stop ( -- ) \ Remove current task from round robin list
   \ Store the "next" of the current task into the "next" field of the previous task
   \ which short-circuits and unlinks the currently running one.
-  prev-task  next-task @ swap !
+  next-task @ prev-task !
 
   \ Do final task switch out of the current task
   \ which is not linked in anymore in round-robin list.

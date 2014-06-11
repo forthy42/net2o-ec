@@ -233,32 +233,83 @@ boot-task variable> up \ user pointer
 : save-task ( -- save )  up @ cell+ inline ;
 : handler ( -- handler ) up @ cell+ cell+ inline ;
 
-: (pause)  1 0  DO \ save I and I'
-	rp@ sp@ save-task ! \ save return stack and stack pointer
-	next-task @ up !    \ switch to next task
-	save-task @ sp! rp! \ restore pointers
-	UNLOOP  EXIT  \ just restore the loop
-    LOOP ; \ close DO to make compiler happy
+: (pause) [ $B430 h, ]  \ push { r4  r5 } to save I and I'
+    rp@ sp@ save-task ! \ save return stack and stack pointer
+    next-task @ up !    \ switch to next task
+    save-task @ sp! rp! \ restore pointers
+    unloop ;            \ pop { r4  r5 } to restore the loop registers
 
 $20 cells Constant stackspace \ 32 stack elements for a background task
 
 : task: ( "name" -- )  stackspace cell+ 2* cell+ buffer: ;
 
+: active? ( task -- ? ) \ Checks if a task is currently inside of round-robin list
+  >r
+  boot-task
+  begin
+    ( Task-Address )
+    dup r@ = if rdrop drop true exit then
+    @ dup boot-task = \ Stop when end of circular list is reached
+  until
+  rdrop drop false
+;
+
+: wake ( task -- ) \ wake a task
+    next-task @ over ! next-task ! ;
+
 : activate ( task r:continue -- )
-    r> swap >r boot-task @ r@ !
+    r> swap  dup active? if 2drop exit then  >r
     r@ stackspace cell+ cell+ + dup r@ cell+ !
-    dup stackspace + 2 cells - tuck swap !
-    2 cells + !  r> boot-task ! ;
+    dup stackspace + tuck 2 cells - swap ! !
+    r> wake ;
 
 : multitask ( -- ) ['] (pause) hook-pause ! ;
 : singletask ( -- ) ['] nop hook-pause ! ;
 
+: prev-task ( -- addr )
+  \ Find the task that has the currently running one in its next field
+  boot-task begin dup @ up @ <> while @ repeat ;
+
+: stop ( -- ) \ Remove current task from round robin list
+  \ Store the "next" of the current task into the "next" field of the previous task
+  \ which short-circuits and unlinks the currently running one.
+  prev-task  next-task @ swap !
+
+  \ Do final task switch out of the current task
+  \ which is not linked in anymore in round-robin list.
+  pause 
+;
+
+\ --------------------------------------------------
+\  Debugging helpers
+\ --------------------------------------------------
+
+: tasks ( -- ) \ Show tasks currently in round-robin list
+  hook-pause @ singletask \ Stop multitasking as this list may be changed during printout.
+
+  \ Start with current task.
+  next-task cr
+
+  begin
+    ( Task-Address )
+    dup             ." Task Address: " hex.
+    dup           @ ." Next Task: " hex.
+    dup 1 cells + @ ." Stack: " hex.
+    dup 2 cells + @ ." Handler: " hex. cr
+
+    @ dup next-task = \ Stop when end of circular list is reached
+  until
+  drop
+
+  hook-pause ! \ Restore old state of multitasking
+;
+
 \ exception handling
 
 : catch ( x1 .. xn xt -- y1 .. yn throwcode / z1 .. zm 0 )
-    1 0 DO  sp@ >r handler @ >r rp@ handler !  execute
-	r> handler !  rdrop
-	0 UNLOOP  EXIT  LOOP ;
+    [ $B430 h, ]  \ push { r4  r5 } to save I and I'
+    sp@ >r handler @ >r rp@ handler !  execute
+    r> handler !  rdrop  0 unloop ;
 : throw ( throwcode -- )  dup IF
 	handler @ rp! r> handler ! r> swap >r sp! drop r>
 	UNLOOP  EXIT

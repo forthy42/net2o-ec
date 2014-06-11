@@ -244,14 +244,13 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 : task: ( "name" -- )  stackspace cell+ 2* cell+ buffer: ;
 
 : active? ( task -- ? ) \ Checks if a task is currently inside of round-robin list
-  >r
   next-task
   begin
     ( Task-Address )
-    dup r@ = if rdrop drop true exit then
+    2dup = if 2drop true exit then
     @ dup next-task = \ Stop when end of circular list is reached
   until
-  rdrop drop false
+  2drop false
 ;
 
 : wake ( task -- ) \ wake a task

@@ -245,11 +245,11 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 
 : active? ( task -- ? ) \ Checks if a task is currently inside of round-robin list
   >r
-  boot-task
+  next-task
   begin
     ( Task-Address )
     dup r@ = if rdrop drop true exit then
-    @ dup boot-task = \ Stop when end of circular list is reached
+    @ dup next-task = \ Stop when end of circular list is reached
   until
   rdrop drop false
 ;

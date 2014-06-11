@@ -258,10 +258,10 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
     next-task @ over ! next-task ! ;
 
 : activate ( task r:continue -- )
-    r> swap  dup active? if 2drop exit then  >r
+    r> swap >r
     r@ stackspace cell+ cell+ + dup r@ cell+ !
     dup stackspace + tuck 2 cells - swap ! !
-    r> wake ;
+    r@ active? if rdrop exit then r> wake ;
 
 : multitask ( -- ) ['] (pause) hook-pause ! ;
 : singletask ( -- ) ['] nop hook-pause ! ;
@@ -279,6 +279,8 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
   \ which is not linked in anymore in round-robin list.
   pause 
 ;
+
+: kill ( task -- ) activate stop ;
 
 \ --------------------------------------------------
 \  Debugging helpers

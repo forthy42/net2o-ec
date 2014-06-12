@@ -254,10 +254,10 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 ;
 
 : wake ( task -- ) \ wake a task
-    next-task @ over ! next-task ! ;
+    dint next-task @ over ! next-task ! eint ;
 
 : activate ( task r:continue -- )
-    r> swap >r
+    r> swap >r 0 r@ cell+ cell+ ! \ no handler
     r@ stackspace cell+ cell+ + dup r@ cell+ !
     dup stackspace + tuck 2 cells - swap ! !
     r@ active? if rdrop exit then r> wake ;
@@ -267,16 +267,29 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 
 : prev-task ( -- addr )
   \ Find the task that has the currently running one in its next field
-  boot-task begin dup @ up @ <> while @ repeat ;
+  next-task begin dup @ up @ <> while @ repeat ;
+
+: sleep [ $BF30 h, ] inline ; \ WFI Opcode, Wait For Interrupt, enters sleep mode
+
+task: lowpower-task
+
+: lowpower& ( -- )
+    lowpower-task activate
+    begin
+	dint next-task dup @ = if sleep eint then
+	\ Is this task the only one remaining in round-robin list ?
+	pause
+    again
+;
 
 : stop ( -- ) \ Remove current task from round robin list
-  \ Store the "next" of the current task into the "next" field of the previous task
-  \ which short-circuits and unlinks the currently running one.
-  next-task @ prev-task !
+    \ Store the "next" of the current task into the "next" field of the previous task
+    \ which short-circuits and unlinks the currently running one.
+    dint next-task @ prev-task ! eint
 
-  \ Do final task switch out of the current task
-  \ which is not linked in anymore in round-robin list.
-  pause 
+    \ Do final task switch out of the current task
+    \ which is not linked in anymore in round-robin list.
+    pause 
 ;
 
 : kill ( task -- ) activate stop ;
@@ -312,6 +325,7 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
     sp@ >r handler @ >r rp@ handler !  execute
     r> handler !  rdrop  0 unloop ;
 : throw ( throwcode -- )  dup IF
+	handler @ 0= IF  stop  THEN \ unhandled error: stop task
 	handler @ rp! r> handler ! r> swap >r sp! drop r>
 	UNLOOP  EXIT
     ELSE  drop  THEN ;

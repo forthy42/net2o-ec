@@ -269,10 +269,10 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
     TX-Descriptor' cell+ 2@ $3FFF and .packet
 ;
 
-: ethernet-handler ( -- )
-    -1 EMACDMARIS ! ;
-
 task: ethernet-task
+
+: ethernet-handler ( -- )
+    -1 EMACDMARIS ! ethernet-task wake ;
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
@@ -437,7 +437,8 @@ Variable arp#
 : ethernet& ( -- )
     ethernet-task activate
     BEGIN
-	BEGIN  pause RX-Descriptor' @ own and 0=  UNTIL
+	pause
+	BEGIN  RX-Descriptor' @ own and  WHILE  stop  REPEAT
 
 	RX-Descriptor' dup >r handle-rx
 	r> 8 + @ ether-size rx-buffer+

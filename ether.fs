@@ -245,7 +245,6 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 
 : tx-buffer+ ( addr u -- )
     \ send this block
-    ether-size min \ no more than 1522 bytes
     SAIC:RS or TX-Descriptor cell+ 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
     TDES0:own
     tx-head @ desc-size + descs-mask u>= TER and or
@@ -254,6 +253,11 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
     -1 EMACTXPOLLD ! \ polltx to tell TX logic to go on
     tx-head @ desc-size + descs-mask and tx-head !
 ;   \ Sendelogik anstuppsen
+
+: tx-buffer+2 ( addrhdr uhdr addrdata udata -- )
+    \ send these two blocks, one is a prefabbed header, the other dynamic data
+    16 lshift rot or swap TX-Descriptor 3 cells + ! \ TDES3: Addr2
+    tx-buffer+ ;
 
 : rx-buffer+ ( addr u -- )
     ether-size min \ no more than 1522 bytes
@@ -386,8 +390,65 @@ Variable arp#
 
 \ udp
 
-: udp-rx ( addr len -- )  singletask
-    ." UDP received" cr .ippacket ;
+42 Constant udp-hdr#
+
+udp-hdr# aligned buffer: term-hdr
+udp-hdr# aligned buffer: data-hdr
+
+: udp-reply ( addr destaddr -- addr destaddr' )
+    ip-reply
+    over udp-dest be-w@ tw, \ swap dest/src
+    over udp-src  be-w@ tw,
+    0 tl, ; \ length+CS stub
+
+: sendv ( addr u hdr -- ) >r
+    dup 8 + r@ udp-len be-w!
+    dup 28 + r@ ip-len be-w!
+    r> udp-hdr# 2swap tx-buffer+2 ;
+
+: udp-data ( addr u -- ) \ just setup the reply buffer
+    drop data-hdr udp-reply 2drop ;
+
+: /string ( addr1 u1 n -- addr2 u2 )
+    tuck - >r + r> ;
+
+1476 buffer: inject-buffer
+2Variable inject-keys \ stub
+
+: udp-term ( addr u -- )
+    over term-hdr udp-reply 2drop
+    drop dup udp-len be-w@ 8 - >r udp-hdr# + inject-buffer r@ move
+    inject-buffer r> inject-keys 2! ;
+
+: .udphdr ( addr len -- )
+    ." UDP src:  " over udp-src  be-w@ . cr
+    ." UDP dest: " over udp-dest be-w@ . cr ;
+: .udppacket ( addr len -- )  .iphdr .udphdr .packet cr ;
+
+' .udppacket 0
+' .udppacket 0
+' .udppacket 0
+' .udppacket 0
+' .udppacket 0
+' .udppacket 0
+12 nvariable free-udpports
+
+' udp-data 4202
+' udp-term 4201
+4 nvariable udpports
+
+: term-type ( addr u -- ) \ unbuffered type
+    term-hdr sendv ;
+
+\ udp port dispatcher
+
+: udp-rx ( addr u -- )
+    over udp-dest be-w@
+    udpports 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop ." UDP unmapped port received" cr .udppacket ;
 
 \ ip handler
 
@@ -396,12 +457,12 @@ Variable arp#
 ' .ippacket 0
 ' .ippacket 0
 ' .ippacket 0
-10 nvariable free-iptypes
-
 ' .ippacket 0
+12 nvariable free-iptypes
+
 ' udp-rx 17
 ' icmp-rx 1
-6 nvariable iptypes
+4 nvariable iptypes
 
 : rx-ip ( desc -- ) desc@ over ip-protocol c@
     iptypes 16 cells bounds do

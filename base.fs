@@ -218,6 +218,8 @@ mealsforwholeday
 : cells ( n -- n ) 2 lshift inline 1-foldable ;
 : cell+ ( n -- n ) 4 +      inline 1-foldable ;
 
+: aligned ( addr -- addr' ) 3 + -4 and inline 1-foldable ;
+
 \ field
 
 : +field ( offset size "name" -- )  <builds over , + does> @ + ;
@@ -276,7 +278,7 @@ task: lowpower-task
 : lowpower& ( -- )
     lowpower-task activate
     begin
-	dint next-task dup @ = if sleep eint then
+	dint next-task dup @ = if eint sleep then
 	\ Is this task the only one remaining in round-robin list ?
 	pause
     again

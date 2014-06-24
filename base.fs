@@ -256,13 +256,14 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
 ;
 
 : wake ( task -- ) \ wake a task
+    dup active? IF  drop  exit  THEN
     dint next-task @ over ! next-task ! eint ;
 
 : activate ( task r:continue -- )
     r> swap >r 0 r@ cell+ cell+ ! \ no handler
     r@ stackspace cell+ cell+ + dup r@ cell+ !
     dup stackspace + tuck 2 cells - swap ! !
-    r@ active? if rdrop exit then r> wake ;
+    r> wake ;
 
 : multitask ( -- ) ['] (pause) hook-pause ! ;
 : singletask ( -- ) ['] nop hook-pause ! ;

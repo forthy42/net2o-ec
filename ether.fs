@@ -276,7 +276,7 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 task: ethernet-task
 
 : ethernet-handler ( -- )
-    -1 EMACDMARIS ! ethernet-task wake ;
+    -1 EMACDMARIS ! ethernet-task (wake) ;
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
@@ -448,7 +448,7 @@ udp-hdr# aligned buffer: data-hdr
 	dup i @ = if
 	    drop  i cell+ @ execute  unloop  exit
 	then
-    2 cells  +loop  drop ." UDP unmapped port received" cr .udppacket ;
+    2 cells  +loop  drop 2drop ;
 
 \ ip handler
 
@@ -495,16 +495,19 @@ udp-hdr# aligned buffer: data-hdr
 : handle-rx ( descriptor -- )
     dup 8 + @ eth-type be-w@ rx-ethertype ;	
 
-: ethernet& ( -- )
-    ethernet-task activate
+: ether-loop ( -- )
     BEGIN
 	pause
 	BEGIN  RX-Descriptor' @ own and  WHILE  stop  REPEAT
-
+	
 	RX-Descriptor' dup >r handle-rx
 	r> 8 + @ ether-size rx-buffer+
 	rx-tail+
-    AGAIN
+    AGAIN ;
+
+: ethernet& ( -- )
+    ethernet-task activate
+    BEGIN  ['] ether-loop catch  drop  AGAIN
 ;
 
 

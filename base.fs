@@ -255,9 +255,11 @@ $20 cells Constant stackspace \ 32 stack elements for a background task
   2drop false
 ;
 
-: wake ( task -- ) \ wake a task
+: (wake) ( task -- ) \ wake a task
     dup active? IF  drop  exit  THEN
-    dint next-task @ over ! next-task ! eint ;
+    next-task @ over ! next-task ! ;
+
+: wake ( task -- ) dint (wake) eint ;
 
 : activate ( task r:continue -- )
     r> swap >r 0 r@ cell+ cell+ ! \ no handler

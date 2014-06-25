@@ -123,7 +123,9 @@ ether-size buffer: TX-Puffer-2
 
 8 4 * Constant desc-size
 8 Constant descs# \ reserve 8 descriptors
+8 Constant txdescs# \ reserve 2 descriptors
 desc-size descs# * 1- Constant descs-mask
+desc-size txdescs# * 1- Constant txdescs-mask
 
 1 30 lshift constant IC
 1 29 lshift constant LS  \ Last Segment of Frame
@@ -138,17 +140,17 @@ TDES0 own or Constant TDES0:own
 
 2 29 lshift constant SAIC:RS \ replace source
 
-0 Variable> rx-head \ descriptor to add new buffers
-0 Variable> rx-tail \ descriptor to receive buffers
-0 Variable> tx-head \ descriptor to send new buffers
+Variable rx-head \ descriptor to add new buffers
+Variable rx-tail \ descriptor to receive buffers
+Variable tx-head \ descriptor to send new buffers
 
 desc-size descs# * buffer: RX-Descriptors
-desc-size descs# * buffer: TX-Descriptors
+desc-size txdescs# * buffer: TX-Descriptors
 
 : RX-Descriptor   RX-Descriptors rx-head @ + ;
 : RX-Descriptor'  RX-Descriptors rx-tail @ + ;
 : TX-Descriptor   TX-Descriptors tx-head @ + ;
-: TX-Descriptor'  TX-Descriptors tx-head @ desc-size - descs-mask and + ;
+: TX-Descriptor'  TX-Descriptors tx-head @ desc-size - txdescs-mask and + ;
 
 \ ip header offsets
 
@@ -247,11 +249,11 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
     \ send this block
     SAIC:RS or TX-Descriptor cell+ 2! \ TDES1+2: Puffergröße+Addr und ein paar Flags
     TDES0:own
-    tx-head @ desc-size + descs-mask u>= TER and or
+    tx-head @ desc-size + txdescs-mask u>= TER and or
     TX-Descriptor ! \ TDES0: Zum Abschicken an den DMA übergeben
     unf tu or emacdmaris !    \ Transmit Buffer Underflow löschen
     -1 EMACTXPOLLD ! \ polltx to tell TX logic to go on
-    tx-head @ desc-size + descs-mask and tx-head !
+    tx-head @ desc-size + txdescs-mask and tx-head !
 ;   \ Sendelogik anstuppsen
 
 : tx-buffer+2 ( addrhdr uhdr addrdata udata -- )
@@ -276,7 +278,7 @@ create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
 task: ethernet-task
 
 : ethernet-handler ( -- )
-    -1 EMACDMARIS ! ethernet-task (wake) ;
+    -1 EMACDMARIS ! ;
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
@@ -305,20 +307,22 @@ Variable arp#
 : >reply ( addr u -- addr u )
     over dup 6 + swap 6 move ;
 
-: rx-arp ( desc -- ) desc@ over 14 + >r
+: rx-arp ( desc -- ) desc@ over ether-header# + >r
     r@ 2@ $01000406 $00080100 d= \ is it an arp request?
-    myip @ r@ 24 + @ = and       \ is it actually for our IP?
-    IF \ arp request for us: do in-place reply
-	>reply  r> 7 + 2 tc,     \ set reply flag
-	dup dup 10 + 10 move     \ move request tuple to reply tuple
-	mymac 6 t$, myip 4 t$,   \ set my mac
-	2drop 42 tx-buffer+ EXIT \ reply it
+    IF  myip @ r@ 24 + @ =       \ is it actually for our IP?
+	IF \ arp request for us: do in-place reply
+	    >reply  r> 7 + 2 tc,     \ set reply flag
+	    dup dup 10 + 10 move     \ move request tuple to reply tuple
+	    mymac 6 t$, myip 4 t$,   \ set my mac
+	    2drop 42 tx-buffer+ EXIT \ reply it
+	THEN
+	rdrop 2drop EXIT \ not my IP
     THEN
     r@ 2@ $02000406 $00080100 d= \ is it an arp reply?
     IF
-	r> 8 + 10 arp-cache+  EXIT
+	2drop r> 8 + 10 arp-cache+  EXIT
     THEN
-    ." ARP unknown packet received" cr
+    ." ARP unknown packet received " r@ 2@ hex. hex. cr
     rdrop .packet cr ;
 
 : fill-arp1 ( -- ) \ generic ARP request
@@ -409,16 +413,48 @@ udp-hdr# aligned buffer: data-hdr
 : udp-data ( addr u -- ) \ just setup the reply buffer
     drop data-hdr udp-reply 2drop ;
 
+\ inject strings into terminal
+
 : /string ( addr1 u1 n -- addr2 u2 )
     tuck - >r + r> ;
 
-1476 buffer: inject-buffer
-2Variable inject-keys \ stub
+1472 Constant udp-max# \ 1518 maximum for non-VLAN packets
+
+udp-max# buffer: inject-buffer
+udp-max# buffer: emit-buffer
+2Variable inject-keys
+Variable emit-chars
+
+: term-type ( addr u -- ) \ unbuffered type
+    term-hdr @ IF  term-hdr sendv  ELSE  2drop  THEN ;
+: term-flush ( -- )
+    emit-chars @ IF  emit-buffer emit-chars @ term-type  0 emit-chars !  THEN ;
+
+: udp-key? ( -- flag ) serial-?key inject-keys @ 0<> or ;
+: udp-key ( -- key )
+    term-flush
+    BEGIN
+	serial-?key IF  serial-key  EXIT  THEN
+	inject-keys 2@ dup IF
+	    over c@ >r 1 /string inject-keys 2!
+	    r> EXIT  THEN
+	2drop
+    AGAIN ;
+
+true variable> serial?
+: udp-emit ( char -- ) serial? @ IF  dup serial-emit  THEN
+    emit-buffer emit-chars @ + c!
+    1 emit-chars +!  emit-chars @ udp-max# u>=  IF  term-flush  THEN ;
 
 : udp-term ( addr u -- )
     over term-hdr udp-reply 2drop
     drop dup udp-len be-w@ 8 - >r udp-hdr# + inject-buffer r@ move
     inject-buffer r> inject-keys 2! ;
+
+: udp-io ( -- )
+    ['] udp-emit hook-emit !
+    ['] udp-key? hook-?key !
+    ['] udp-key hook-key ! ;
 
 : .udphdr ( addr len -- )
     ." UDP src:  " over udp-src  be-w@ . cr
@@ -436,9 +472,6 @@ udp-hdr# aligned buffer: data-hdr
 ' udp-data 4202
 ' udp-term 4201
 4 nvariable udpports
-
-: term-type ( addr u -- ) \ unbuffered type
-    term-hdr sendv ;
 
 \ udp port dispatcher
 
@@ -497,8 +530,7 @@ udp-hdr# aligned buffer: data-hdr
 
 : ether-loop ( -- )
     BEGIN
-	pause
-	BEGIN  RX-Descriptor' @ own and  WHILE  stop  REPEAT
+	BEGIN  pause  RX-Descriptor' @ own and 0=  UNTIL
 	
 	RX-Descriptor' dup >r handle-rx
 	r> 8 + @ ether-size rx-buffer+
@@ -558,7 +590,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
 : descs-setup ( -- )
     RX-Descriptors desc-size descs# * 0 fill
-    TX-Descriptors desc-size descs# * 0 fill
+    TX-Descriptors desc-size txdescs# * 0 fill
     arp-cache /arp arp-cache# *       0 fill
 
     \ allow eight frames to be received
@@ -607,8 +639,8 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Descriptor List Address (EMACTXDLADDR) register providing the DMA with the starting
   \ address of each list.
 
-  RX-Descriptor EMACRXDLADDR !
-  TX-Descriptor EMACTXDLADDR !
+  RX-Descriptors EMACRXDLADDR !
+  TX-Descriptors EMACTXDLADDR !
 
   \ Write to the Ethernet MAC Frame Filter (EMACFRAMEFLTR) register, the Ethernet MAC
   \ Hash Table High (EMACHASHTBLH) and the Ethernet MAC Hash Table Low

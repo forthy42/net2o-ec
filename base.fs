@@ -212,6 +212,9 @@ mealsforwholeday
 : variable> ( x -- ) variable ;  \ Initialised Variable
 : variable  ( -- ) 0 variable ;   \ Uninitialised Variable
 
+: 2variable> ( xd -- ) 2variable ;  \ Initialised Variable
+: 2variable  ( -- ) 0. 2variable ;   \ Uninitialised Variable
+
 : (create) create ;              \ Create without action
 : create <builds does> ;          \ Create with ANS default action
 
@@ -290,11 +293,11 @@ task: lowpower-task
 : stop ( -- ) \ Remove current task from round robin list
     \ Store the "next" of the current task into the "next" field of the previous task
     \ which short-circuits and unlinks the currently running one.
-    dint next-task @ prev-task ! eint
+    dint next-task @ prev-task !
 
     \ Do final task switch out of the current task
     \ which is not linked in anymore in round-robin list.
-    pause 
+    pause \ pause contains an eint
 ;
 
 : kill ( task -- ) activate stop ;

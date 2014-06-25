@@ -427,21 +427,24 @@ Variable emit-chars
 
 : term-type ( addr u -- ) \ unbuffered type
     term-hdr @ IF  term-hdr sendv  ELSE  2drop  THEN ;
-: term-flush ( -- )
+: (term-flush) ( -- )
     emit-chars @ IF  emit-buffer emit-chars @ term-type  0 emit-chars !  THEN ;
+
+true variable> serial?
+true variable> flush-key?
 
 : udp-key? ( -- flag ) serial-?key inject-keys @ 0<> or ;
 : udp-key ( -- key )
-    term-flush
+    flush-key? @ IF  term-flush  THEN
     BEGIN
 	serial-?key IF  serial-key  EXIT  THEN
 	inject-keys 2@ dup IF
 	    over c@ >r 1 /string inject-keys 2!
-	    r> EXIT  THEN
-	2drop
+	    r> dup 3 = IF  drop  true flush-key? !
+	    ELSE  EXIT  THEN
+	ELSE  2drop  THEN
     AGAIN ;
 
-true variable> serial?
 : udp-emit ( char -- ) serial? @ IF  dup serial-emit  THEN
     emit-buffer emit-chars @ + c!
     1 emit-chars +!  emit-chars @ udp-max# u>=  IF  term-flush  THEN ;
@@ -454,7 +457,11 @@ true variable> serial?
 : udp-io ( -- )
     ['] udp-emit hook-emit !
     ['] udp-key? hook-?key !
-    ['] udp-key hook-key ! ;
+    ['] udp-key hook-key !
+    ['] (term-flush) flush-hook ! ;
+
+: include ( "name" -- )
+    term-flush 2 emit token type term-flush  false flush-key? ! ;
 
 : .udphdr ( addr len -- )
     ." UDP src:  " over udp-src  be-w@ . cr
@@ -669,7 +676,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
     clocks-enable  descs-setup  enable-emac
     reset-emac  emac-leds  emac-irqs  emac-init
     \ start background task
-    ethernet&
+    ethernet& udp-io 0 serial? !
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.

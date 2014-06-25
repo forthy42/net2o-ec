@@ -205,7 +205,7 @@ mealsforwholeday
 : >body ( cfa -- pfa ) $E + ;
 : Defer ( "name" -- )  <builds ['] nop , does> @ execute ;
 : is ( xt "name" -- )
-  ' >body state @ IF  literal, postpone !  ELSE  ! THEN ; immediate
+  ' >body state @ IF  literal, postpone !  ELSE  ! THEN immediate ;
 
 \ Compatibility layer for ANS standard code
 
@@ -338,8 +338,10 @@ task: lowpower-task
 	UNLOOP  EXIT
     ELSE  drop  THEN ;
 
-: quit-loop ( -- )  BEGIN  query interpret ."  ok" cr  AGAIN ;
-: quit-catch ( -- )  BEGIN ['] quit-loop catch
+' nop variable> flush-hook
+: term-flush flush-hook @ execute ;
+: quit-loop ( -- )  BEGIN  term-flush query interpret ."  ok" cr  AGAIN ;
+: quit-catch ( -- )  BEGIN  ['] quit-loop catch
 	dup IF  ." Throw: " . cr  ELSE  drop  THEN  AGAIN ;
 
 : sysfault ( -- ) -9 throw ;

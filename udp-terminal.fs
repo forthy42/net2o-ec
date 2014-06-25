@@ -54,11 +54,26 @@ Variable key$ \ string for all keys in a row
 : clear-events ( -- )  pollfds
     2 0 DO  0 over revents w!  pollfd %size +  LOOP  drop ;
 
+0 Value term-file
+$100 Constant term-line#
+
+: term-include ( addr u -- ) r/o open-file throw to term-file
+    BEGIN  pad term-line# term-file read-line throw  WHILE
+	    pad swap 2dup + #cr swap c! 1+ send-term
+	    recv-term 2dup type
+	    dup 4 u>= >r 2dup + 4 - 4 " ok\n" str= r> and
+	0= UNTIL  ELSE  drop  THEN
+    "\3" send-term \ normal flushing enabled
+    term-file close-file 0 to term-file throw ;
+
+: term-type ( addr u -- )
+    over c@ 2 = IF  1 /string term-include  ELSE  type  THEN ;
+
 : run-term ( -- )  prep-socks ." Gforth UDP terminal" cr
     BEGIN
 	clear-events  pollfds 2 ptimeout 0 ppoll
 	0> IF
-	    pollfds revents w@ POLLIN = IF  recv-term type  THEN
+	    pollfds revents w@ POLLIN = IF  recv-term term-type  THEN
 	    pollfds [ pollfd %size revents ]L + w@ POLLIN = IF
 		read-keys  key$ $@ send-term key$ $off  THEN
 	THEN

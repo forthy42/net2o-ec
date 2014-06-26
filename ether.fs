@@ -394,10 +394,8 @@ Variable arp#
 
 \ udp
 
-42 Constant udp-hdr#
-
-udp-hdr# aligned buffer: term-hdr
-udp-hdr# aligned buffer: data-hdr
+udp-header# aligned buffer: term-hdr
+udp-header# aligned buffer: data-hdr
 
 : udp-reply ( addr destaddr -- addr destaddr' )
     ip-reply
@@ -408,7 +406,7 @@ udp-hdr# aligned buffer: data-hdr
 : sendv ( addr u hdr -- ) >r
     dup 8 + r@ udp-len be-w!
     dup 28 + r@ ip-len be-w!
-    r> udp-hdr# 2swap tx-buffer+2 ;
+    r> udp-header# 2swap tx-buffer+2 ;
 
 : udp-data ( addr u -- ) \ just setup the reply buffer
     drop data-hdr udp-reply 2drop ;
@@ -451,7 +449,9 @@ true variable> flush-key?
 
 : udp-term ( addr u -- )
     over term-hdr udp-reply 2drop
-    drop dup udp-len be-w@ 8 - >r udp-hdr# + inject-buffer r@ move
+    udp-header# - >r
+    dup udp-len be-w@ 8 - r> umin >r \ careful: smaller limit wins!
+    udp-header# + inject-buffer r@ move
     inject-buffer r> inject-keys 2! ;
 
 : udp-io ( -- )

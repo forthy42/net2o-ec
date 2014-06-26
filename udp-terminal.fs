@@ -57,17 +57,25 @@ Variable key$ \ string for all keys in a row
 0 Value term-file
 $100 Constant term-line#
 
-: term-include ( addr u -- ) r/o open-file throw to term-file
-    BEGIN  pad term-line# term-file read-line throw  WHILE
-	    pad swap 2dup + #cr swap c! 1+ send-term
-	    recv-term 2dup type
-	    dup 4 u>= >r 2dup + 4 - 4 " ok\n" str= r> and
-	0= UNTIL  ELSE  drop  THEN
-    "\3" send-term \ normal flushing enabled
-    term-file close-file 0 to term-file throw ;
-
+Defer term-include
 : term-type ( addr u -- )
-    over c@ 2 = IF  1 /string term-include  ELSE  type  THEN ;
+    2dup + 1- c@ 2 = over 1 u>= and IF
+	1- type  recv-term term-include
+    ELSE  type  THEN ;
+
+:noname ( addr u -- ) term-file >r
+    [:  r/o open-file throw to term-file  recv-term type
+	BEGIN  pad term-line# term-file read-line throw  WHILE
+		pad swap 2dup + #cr swap c! 1+ send-term
+		recv-term  2dup + 1- c@ 2 = over 1 u>= and >r
+		dup 4 u>= >r 2dup + 4 - 4 " ok\n" str= r> and
+		r> or >r
+		term-type
+	    r> 0= UNTIL  ELSE  drop  THEN
+	term-file close-file throw ;] catch r> to term-file
+    ?dup-IF  .error-string cr 2drop  THEN
+    term-file 0= IF  "\3" send-term  THEN ; \ normal flushing enabled
+IS term-include
 
 : run-term ( -- )  prep-socks ." Gforth UDP terminal" cr
     BEGIN

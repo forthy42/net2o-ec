@@ -460,8 +460,9 @@ true variable> flush-key?
     ['] udp-key hook-key !
     ['] (term-flush) flush-hook ! ;
 
-: include ( "name" -- )
-    term-flush 2 emit token type term-flush  false flush-key? ! ;
+: include ( "name" -- )  false flush-key? !
+    2 emit term-flush 1000 0 DO LOOP \ wait a bit
+    token type term-flush ;
 
 : .udphdr ( addr len -- )
     ." UDP src:  " over udp-src  be-w@ . cr

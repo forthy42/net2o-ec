@@ -431,11 +431,11 @@ Variable emit-chars
 true variable> serial?
 true variable> flush-key?
 
-: udp-key? ( -- flag ) serial-?key inject-keys @ 0<> or ;
+: udp-key? ( -- flag ) serial-key? inject-keys @ 0<> or ;
 : udp-key ( -- key )
     flush-key? @ IF  term-flush  THEN
     BEGIN
-	serial-?key IF  serial-key  EXIT  THEN
+	serial-key? IF  serial-key  EXIT  THEN
 	inject-keys 2@ dup IF
 	    over c@ >r 1 /string inject-keys 2!
 	    r> dup 3 = IF  drop  true flush-key? !
@@ -456,7 +456,7 @@ true variable> flush-key?
 
 : udp-io ( -- )
     ['] udp-emit hook-emit !
-    ['] udp-key? hook-?key !
+    ['] udp-key? hook-key? !
     ['] udp-key hook-key !
     ['] (term-flush) flush-hook ! ;
 
@@ -688,10 +688,11 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
 : po ( -- ) EMACTXCNTGB @ u. ;
 
-
 \ Im normalen Netzwerk mitten im Gewusel ausprobiert:
 \ Dieser Zähler wächst brav mit ankommenden Paketen. 
 
-compiletoram
-
 init
+
+cornerstone rewind-to-ethernet
+
+compiletoram

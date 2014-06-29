@@ -240,7 +240,7 @@ boot-task variable> up \ user pointer
 
 : (pause) [ $B430 h, ]  \ push { r4  r5 } to save I and I'
     rp@ sp@ save-task ! \ save return stack and stack pointer
-    next-task @ up !    \ switch to next task
+    next-task @ up ! eint \ switch to next task
     save-task @ sp! rp! \ restore pointers
     unloop ;            \ pop { r4  r5 } to restore the loop registers
 

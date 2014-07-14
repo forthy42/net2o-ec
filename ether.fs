@@ -1,9 +1,161 @@
-\ Ethernet driver for TM4C1294
-\   needs base.fs
-
-\ Is flashable
+\ Ethernet driver for TM4C1294 contributed by Bernd Paysan
+\   needs basisdefinitions.txt
 
 compiletoflash
+
+\ -------------------------------------------
+\  Compatibility layer for ANS standard code
+\ -------------------------------------------
+
+: variable> ( x -- ) variable ;  \ Initialised Variable
+: variable  ( -- ) 0 variable ;   \ Uninitialised Variable
+
+: 2variable> ( xd -- ) 2variable ;  \ Initialised Variable
+: 2variable  ( -- ) 0. 2variable ;   \ Uninitialised Variable
+
+\ -----------------------------------------------------------
+\  Multitasking, Catch and Throw
+\ -----------------------------------------------------------
+
+\ field
+
+: +field ( offset size "name" -- )  <builds over , + does> @ + ;
+: cfield: ( u1 "name" -- u2 )  1 +field ;
+: field: ( u1 "name" -- u2 )   aligned 1 cells +field ;
+
+\ multitasker
+
+0 0 flashvar-here 3 cells - 3 nvariable boot-task \ boot task has no extra stackspace
+boot-task boot-task ! \ for compilation into RAM
+
+boot-task variable> up \ user pointer
+: next-task ( -- task )  up @ inline ;
+: save-task ( -- save )  up @ cell+ inline ;
+: handler ( -- handler ) up @ cell+ cell+ inline ;
+
+: (pause) [ $B430 h, ]  \ push { r4  r5 } to save I and I'
+    rp@ sp@ save-task ! \ save return stack and stack pointer
+    next-task @ up ! eint \ switch to next task
+    save-task @ sp! rp! \ restore pointers
+    unloop ;            \ pop { r4  r5 } to restore the loop registers
+
+128 cells Constant stackspace \ 128 stack elements for a background task
+
+: task: ( "name" -- )  stackspace cell+ 2* cell+ buffer: ;
+
+: active? ( task -- ? ) \ Checks if a task is currently inside of round-robin list
+  next-task
+  begin
+    ( Task-Address )
+    2dup = if 2drop true exit then
+    @ dup next-task = \ Stop when end of circular list is reached
+  until
+  2drop false
+;
+
+: (wake) ( task -- ) \ wake a task
+    dup active? IF  drop  exit  THEN
+    next-task @ over ! next-task ! ;
+
+: wake ( task -- ) dint (wake) eint ;
+
+: activate ( task r:continue -- )
+    r> swap >r 0 r@ cell+ cell+ ! \ no handler
+    r@ stackspace cell+ cell+ + dup r@ cell+ !
+    dup stackspace + tuck 2 cells - swap ! !
+    r> wake ;
+
+: multitask ( -- ) ['] (pause) hook-pause ! ;
+: singletask ( -- ) ['] nop hook-pause ! ;
+
+: prev-task ( -- addr )
+  \ Find the task that has the currently running one in its next field
+  next-task begin dup @ up @ <> while @ repeat ;
+
+: sleep [ $BF30 h, ] inline ; \ WFI Opcode, Wait For Interrupt, enters sleep mode
+
+task: lowpower-task
+
+: lowpower& ( -- )
+    lowpower-task activate
+    begin
+	dint next-task dup @ = if eint sleep then
+	\ Is this task the only one remaining in round-robin list ?
+	pause
+    again
+;
+
+: stop ( -- ) \ Remove current task from round robin list
+    \ Store the "next" of the current task into the "next" field of the previous task
+    \ which short-circuits and unlinks the currently running one.
+    dint next-task @ prev-task !
+
+    \ Do final task switch out of the current task
+    \ which is not linked in anymore in round-robin list.
+    pause \ pause contains an eint
+;
+
+: kill ( task -- ) activate stop ;
+
+\ --------------------------------------------------
+\  Multitasking insight
+\ --------------------------------------------------
+
+: tasks ( -- ) \ Show tasks currently in round-robin list
+  hook-pause @ singletask \ Stop multitasking as this list may be changed during printout.
+
+  \ Start with current task.
+  next-task cr
+
+  begin
+    ( Task-Address )
+    dup             ." Task Address: " hex.
+    dup           @ ." Next Task: " hex.
+    dup 1 cells + @ ." Stack: " hex.
+    dup 2 cells + @ ." Handler: " hex. cr
+
+    @ dup next-task = \ Stop when end of circular list is reached
+  until
+  drop
+
+  hook-pause ! \ Restore old state of multitasking
+;
+
+\ --------------------------------------------------
+\  Exception handling
+\ --------------------------------------------------
+
+: catch ( x1 .. xn xt -- y1 .. yn throwcode / z1 .. zm 0 )
+    [ $B430 h, ]  \ push { r4  r5 } to save I and I'
+    sp@ >r handler @ >r rp@ handler !  execute
+    r> handler !  rdrop  0 unloop ;
+: throw ( throwcode -- )  dup IF
+	handler @ 0= IF  stop  THEN \ unhandled error: stop task
+	handler @ rp! r> handler ! r> swap >r sp! drop r>
+	UNLOOP  EXIT
+    ELSE  drop  THEN ;
+
+' nop variable> flush-hook
+: term-flush flush-hook @ execute ;
+: quit-loop ( -- )  BEGIN  term-flush query interpret ."  ok" cr  AGAIN ;
+: quit-catch ( -- )  BEGIN  ['] quit-loop catch
+	dup IF  ." Throw: " . cr  ELSE  drop  THEN  AGAIN ;
+
+: sysfault ( -- ) -9 throw ;
+
+: init ( -- )
+    init  multitask
+    ['] quit-catch hook-quit !
+    ['] sysfault irq-fault ! ;
+
+init
+quit \ Activate Multitasking and new Catch/Throw mechanism
+
+\ --------------------------------------------------
+\  Ethernet drivers
+\ --------------------------------------------------
+
+: bounds ( addr len -- end start ) over + swap inline 2-foldable ;
 
 $400EC000 constant Ethernet-Base
 $400FE000 constant USB-Base \ for unique device ID
@@ -195,7 +347,6 @@ Constant icmp-header#
   base !
 ;
 
-
 : mac. ( addr -- )
   dup     c@ byte. ." :"
   dup 1 + c@ byte. ." :"
@@ -232,11 +383,21 @@ Constant icmp-header#
 1 5 lshift constant UNF \ Transmit Underflow
 1 2 lshift constant TU \ Transmit Unavailabl
 
-create mymac  $00 c, $1A c, $B6 c,
-uniqueid0 @ dup c, 8 rshift dup c,
-uniqueid3 3 + c@ c, \ use unique ID
-$00 c, $80 c,
-create myip   10 c, 0 c, 0 c, mymac 5 + c@ c,
+create mymac  
+$00 c, 
+$1A c, 
+$B6 c, 
+uniqueid0 @ dup c, 
+8 rshift c, 
+uniqueid3 3 + c@ c, 
+$00 c, 
+$80 c,  \ use unique ID
+
+create myip   
+10 c, 
+0 c, 
+0 c, 
+mymac 5 + c@ c,
 
 : tc, ( addr char -- addr' )  over c! 1+ ;
 : tw, ( addr word -- addr' )  >r r@ 8 rshift tc, r> tc, ;
@@ -560,11 +721,6 @@ Sysctl-Base $07C + constant MOSCCTL
 Sysctl-Base $930 + constant PCEPHY
 Sysctl-Base $99C + constant PCEMAC
 
-$E000E100 constant en0 ( Interrupt Set Enable )
-$E000E104 constant en1 ( Interrupt Set Enable )
-$E000E108 constant en2 ( Interrupt Set Enable )
-$E000E10C constant en3 ( Interrupt Set Enable )
-
 \ Constants for EMACDMABUSMOD
 
 1 7 lshift constant ATDS
@@ -626,11 +782,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   $50005 PORTF_PCTL ! ;
 
 : emac-irqs ( -- )
-    \ Radikal erstmal alle Interrupts global aktivieren
-  -1 en0 !
-  -1 en1 !
-  -1 en2 !
-  -1 en3 !
+  56 nvic-enable \ Enable ethernet vector in NVIC
 
   ['] ethernet-handler irq-ethernet !
   \ Write to the Ethernet MAC DMA Interrupt Mask Register (EMACDMAIM) register to mask unnecessary interrupt causes.
@@ -677,22 +829,20 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
     clocks-enable  descs-setup  enable-emac
     reset-emac  emac-leds  emac-irqs  emac-init
     \ start background task
-    ethernet& udp-io 0 serial? !
+    ethernet& udp-io
+    ." Mecrisp-Stellaris ethernet terminal ready" cr
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.
 
-: pi ( -- ) \  Ethernet MAC Receive Frame Count for Good and Bad Frames.
-  EMACRXCNTGB @ u.
+: netstat ( -- )
+  ." Incoming frames: " EMACRXCNTGB @ u. cr
+  ." Outgoing frames: " EMACTXCNTGB @ u. cr
 ;
 
-: po ( -- ) EMACTXCNTGB @ u. ;
+: variable variable> ; \ Define variable back to initialised mode
+: 2variable 2variable> ;
 
-\ Im normalen Netzwerk mitten im Gewusel ausprobiert:
-\ Dieser Zähler wächst brav mit ankommenden Paketen. 
-
-init
-
-cornerstone rewind-to-ethernet
-
+\ cornerstone rewind-to-ethernet
 compiletoram
+init

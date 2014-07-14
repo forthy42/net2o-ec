@@ -443,12 +443,16 @@ task: ethernet-task
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
-: desc@ ( desc -- addr u )
-    >r r@ 8 + @ r> @ 16 rshift $3FFF and ;
+: dump-rx ( addr u -- ) .packet cr ;
 
-: dump-rx ( desc -- ) desc@ .packet cr ;
+: dispatcher ( addr u type table -- )
+    16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop 2drop ;
 
-: rx-ipv6 ( desc -- )
+: rx-ipv6 ( addr u -- )
     ." IPv6 packet received" cr dump-rx ;
 
 \ arp protocol: reply to requests (no caching and doing our own requests)
@@ -468,7 +472,7 @@ Variable arp#
 : >reply ( addr u -- addr u )
     over dup 6 + swap 6 move ;
 
-: rx-arp ( desc -- ) desc@ over ether-header# + >r
+: rx-arp ( addr u -- ) over ether-header# + >r
     r@ 2@ $01000406 $00080100 d= \ is it an arp request?
     IF  myip @ r@ 24 + @ =       \ is it actually for our IP?
 	IF \ arp request for us: do in-place reply
@@ -645,12 +649,7 @@ true variable> flush-key?
 \ udp port dispatcher
 
 : udp-rx ( addr u -- )
-    over udp-dest be-w@
-    udpports 16 cells bounds do
-	dup i @ = if
-	    drop  i cell+ @ execute  unloop  exit
-	then
-    2 cells  +loop  drop 2drop ;
+    over udp-dest be-w@ udpports dispatcher ;
 
 \ ip handler
 
@@ -666,12 +665,8 @@ true variable> flush-key?
 ' icmp-rx 1
 4 nvariable iptypes
 
-: rx-ip ( desc -- ) desc@ over ip-protocol c@
-    iptypes 16 cells bounds do
-	dup i @ = if
-	    drop  i cell+ @ execute  unloop  exit
-	then
-    2 cells  +loop  drop .ippacket ;
+: rx-ip ( addr u -- )
+    over ip-protocol c@ iptypes dispatcher ;
 
 \ ethernet handler
 
@@ -687,15 +682,11 @@ true variable> flush-key?
 ' rx-ip   $0800
 6 nvariable ethertypes
 
-: rx-ethertype ( descriptor ethertype -- )
-    ethertypes 16 cells bounds do
-	dup i @ = if
-	    drop  i cell+ @ execute  unloop  exit
-	then
-    2 cells  +loop  drop dump-rx ;
+: desc@ ( desc -- addr u )
+    >r r@ 8 + @ r> @ 16 rshift $3FFF and ;
 
 : handle-rx ( descriptor -- )
-    dup 8 + @ eth-type be-w@ rx-ethertype ;	
+    desc@ over eth-type be-w@ ethertypes dispatcher ;
 
 : ether-loop ( -- )
     BEGIN

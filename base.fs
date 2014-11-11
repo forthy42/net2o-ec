@@ -1,14 +1,5 @@
+
 compiletoflash
-
-: spaces 0 ?do space loop ;
-: invert  not  inline 1-foldable ;
-
-: count dup 1+ swap c@ ; ( cstr-addr -- addr count )
-: bounds ( addr len -- end start ) over + swap inline 2-foldable ;
-
-: octal 8 base ! ;
-: sqr ( n -- n^2 ) dup * 1-foldable ;
-: star 42 emit ;
 
 : Flamingo cr
 ."      _" cr
@@ -74,6 +65,38 @@ PORTN_BASE $514 + constant PORTN_PDR  ( Pulldown Resistor )
 PORTN_BASE $518 + constant PORTN_SLR  ( Slew Rate )
 PORTN_BASE $51C + constant PORTN_DEN  ( Digital Enable )
 
+\  Interrupt controller tools
+
+$E000E100 constant en0 ( Interrupt Set Enable  0-31  )
+$E000E104 constant en1 ( Interrupt Set Enable 32-63  )
+$E000E108 constant en2 ( Interrupt Set Enable 64-95  )
+$E000E10C constant en3 ( Interrupt Set Enable 96-127 )
+
+$E000E180 constant dis0 ( Interrupt Clear Enable  0-31  )
+$E000E184 constant dis1 ( Interrupt Clear Enable 32-63  )
+$E000E188 constant dis2 ( Interrupt Clear Enable 64-95  )
+$E000E18C constant dis3 ( Interrupt Clear Enable 96-127 )
+
+: nvic-enable ( irq# -- )
+  16 - \ Cortex Core Vectors
+  dup 32 u< if      1 swap lshift en0 ! exit then
+  dup 64 u< if 32 - 1 swap lshift en1 ! exit then
+  dup 96 u< if 64 - 1 swap lshift en2 ! exit then
+               96 - 1 swap lshift en3 !
+;
+
+: nvic-disable ( irq# -- )
+  16 - \ Cortex Core Vectors
+  dup 32 u< if      1 swap lshift dis0 ! exit then
+  dup 64 u< if 32 - 1 swap lshift dis1 ! exit then
+  dup 96 u< if 64 - 1 swap lshift dis2 ! exit then
+               96 - 1 swap lshift dis3 !
+;
+ 
+: nvic-priority ( priority irq# -- )
+  $E000E400 + c!
+;
+ 
 \ Hardware definitions for Tiva Connected Launchpad
 
 1 1 lshift  constant led-1 \ On Port N Bit 1
@@ -105,7 +128,7 @@ PORTN_BASE $51C + constant PORTN_DEN  ( Digital Enable )
 : switch1? ( -- ? ) switch-1 portj_data bit@ not ;
 : switch2? ( -- ? ) switch-2 portj_data bit@ not ;
 
-: switches begin ." Switch 1: " switch1? . ."  Switch 2: " switch2? . cr ?key until ;
+: switches begin ." Switch 1: " switch1? . ."  Switch 2: " switch2? . cr key? until ;
 
 : leds ( -- )
   begin
@@ -137,60 +160,8 @@ PORTN_BASE $51C + constant PORTN_DEN  ( Digital Enable )
 \ If you want to go back to this dictionary state later, type:
 \ cornerstone Rewind-to-Basis
 
-: table   cr 11 1 do
-                    11 1 do i j * . loop
-                    cr
-                  loop ;
-table
-
-( Roman numerals taken from Leo Brodies "Thinking Forth" )
-
-: create> <builds does> ;
-( In ANS, this would simply be done with "create" )
-
-create> romans
-  (      ones ) char I c,  char V c,
-  (      tens ) char X c,  char L c,
-  (  hundreds ) char C c,  char D c,
-  ( thousands ) char M c,
-
-0 variable column# ( current_offset )
-: ones      0 column# ! ;
-: tens      2 column# ! ;
-: hundreds  4 column# ! ;
-: thousands 6 column# ! ;
-
-: column ( -- address-of-column ) romans column# @ + ;
-
-: .symbol ( offset -- ) column + c@ emit ;
-: oner  0 .symbol ;
-: fiver 1 .symbol ;
-: tener 2 .symbol ;
-
-: oners ( #-of-oners )
-  ?dup if 0 do oner loop then ;
-
-: almost ( quotient-of-5 -- )
-  oner if tener else fiver then ;
-
-: romandigit ( digit -- )
-  5 /mod over 4 = if almost drop else if fiver then oners then ;
-
-: roman ( number -- )
-  1000 /mod thousands romandigit
-   100 /mod  hundreds romandigit
-    10 /mod      tens romandigit
-                 ones romandigit ;
-
-: mealtime   19 u<= if
-                      ." Fruit salad "
-                    else
-                      ." Green salad "
-                    then
-                    ." would be nice !" ;
-
-: mealsforwholeday cr 25 6 do i dup roman ." : " mealtime cr 2 +loop cr ;
-mealsforwholeday
+compiletoram
+init
 
 : tick  ( -- ) ." Tick" cr ;
 
@@ -199,159 +170,3 @@ mealsforwholeday
   systick-1Hz
   eint
 ;
-
-\ deferred words, works only on RAM now
-
-: >body ( cfa -- pfa ) $E + ;
-: Defer ( "name" -- )  <builds ['] nop , does> @ execute ;
-: is ( xt "name" -- )
-  ' >body state @ IF  literal, postpone !  ELSE  ! THEN immediate ;
-
-\ Compatibility layer for ANS standard code
-
-: variable> ( x -- ) variable ;  \ Initialised Variable
-: variable  ( -- ) 0 variable ;   \ Uninitialised Variable
-
-: 2variable> ( xd -- ) 2variable ;  \ Initialised Variable
-: 2variable  ( -- ) 0. 2variable ;   \ Uninitialised Variable
-
-: (create) create ;              \ Create without action
-: create <builds does> ;          \ Create with ANS default action
-
-: cells ( n -- n ) 2 lshift inline 1-foldable ;
-: cell+ ( n -- n ) 4 +      inline 1-foldable ;
-
-: aligned ( addr -- addr' ) 3 + -4 and inline 1-foldable ;
-
-\ field
-
-: +field ( offset size "name" -- )  <builds over , + does> @ + ;
-: cfield: ( u1 "name" -- u2 )  1 +field ;
-: field: ( u1 "name" -- u2 )   aligned cell +field ;
-
-\ multitasker
-
-0 0 flashvar-here 3 cells - 3 nvariable boot-task \ boot task has no extra stackspace
-
-boot-task variable> up \ user pointer
-: next-task ( -- task )  up @ inline ;
-: save-task ( -- save )  up @ cell+ inline ;
-: handler ( -- handler ) up @ cell+ cell+ inline ;
-
-: (pause) [ $B430 h, ]  \ push { r4  r5 } to save I and I'
-    rp@ sp@ save-task ! \ save return stack and stack pointer
-    next-task @ up ! eint \ switch to next task
-    save-task @ sp! rp! \ restore pointers
-    unloop ;            \ pop { r4  r5 } to restore the loop registers
-
-$20 cells Constant stackspace \ 32 stack elements for a background task
-
-: task: ( "name" -- )  stackspace cell+ 2* cell+ buffer: ;
-
-: active? ( task -- ? ) \ Checks if a task is currently inside of round-robin list
-  next-task
-  begin
-    ( Task-Address )
-    2dup = if 2drop true exit then
-    @ dup next-task = \ Stop when end of circular list is reached
-  until
-  2drop false
-;
-
-: (wake) ( task -- ) \ wake a task
-    dup active? IF  drop  exit  THEN
-    next-task @ over ! next-task ! ;
-
-: wake ( task -- ) dint (wake) eint ;
-
-: activate ( task r:continue -- )
-    r> swap >r 0 r@ cell+ cell+ ! \ no handler
-    r@ stackspace cell+ cell+ + dup r@ cell+ !
-    dup stackspace + tuck 2 cells - swap ! !
-    r> wake ;
-
-: multitask ( -- ) ['] (pause) hook-pause ! ;
-: singletask ( -- ) ['] nop hook-pause ! ;
-
-: prev-task ( -- addr )
-  \ Find the task that has the currently running one in its next field
-  next-task begin dup @ up @ <> while @ repeat ;
-
-: sleep [ $BF30 h, ] inline ; \ WFI Opcode, Wait For Interrupt, enters sleep mode
-
-task: lowpower-task
-
-: lowpower& ( -- )
-    lowpower-task activate
-    begin
-	dint next-task dup @ = if eint sleep then
-	\ Is this task the only one remaining in round-robin list ?
-	pause
-    again
-;
-
-: stop ( -- ) \ Remove current task from round robin list
-    \ Store the "next" of the current task into the "next" field of the previous task
-    \ which short-circuits and unlinks the currently running one.
-    dint next-task @ prev-task !
-
-    \ Do final task switch out of the current task
-    \ which is not linked in anymore in round-robin list.
-    pause \ pause contains an eint
-;
-
-: kill ( task -- ) activate stop ;
-
-\ --------------------------------------------------
-\  Debugging helpers
-\ --------------------------------------------------
-
-: tasks ( -- ) \ Show tasks currently in round-robin list
-  hook-pause @ singletask \ Stop multitasking as this list may be changed during printout.
-
-  \ Start with current task.
-  next-task cr
-
-  begin
-    ( Task-Address )
-    dup             ." Task Address: " hex.
-    dup           @ ." Next Task: " hex.
-    dup 1 cells + @ ." Stack: " hex.
-    dup 2 cells + @ ." Handler: " hex. cr
-
-    @ dup next-task = \ Stop when end of circular list is reached
-  until
-  drop
-
-  hook-pause ! \ Restore old state of multitasking
-;
-
-\ exception handling
-
-: catch ( x1 .. xn xt -- y1 .. yn throwcode / z1 .. zm 0 )
-    [ $B430 h, ]  \ push { r4  r5 } to save I and I'
-    sp@ >r handler @ >r rp@ handler !  execute
-    r> handler !  rdrop  0 unloop ;
-: throw ( throwcode -- )  dup IF
-	handler @ 0= IF  stop  THEN \ unhandled error: stop task
-	handler @ rp! r> handler ! r> swap >r sp! drop r>
-	UNLOOP  EXIT
-    ELSE  drop  THEN ;
-
-' nop variable> flush-hook
-: term-flush flush-hook @ execute ;
-: quit-loop ( -- )  BEGIN  term-flush query interpret ."  ok" cr  AGAIN ;
-: quit-catch ( -- )  BEGIN  ['] quit-loop catch
-	dup IF  ." Throw: " . cr  ELSE  drop  THEN  AGAIN ;
-
-: sysfault ( -- ) -9 throw ;
-
-: init ( -- )
-    init  multitask
-    ['] quit-catch hook-quit !
-    ['] sysfault irq-fault ! ;
-
-compiletoram
-init
-quit
-

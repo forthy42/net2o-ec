@@ -403,6 +403,7 @@ mymac 5 + c@ c,
 : tw, ( addr word -- addr' )  >r r@ 8 rshift tc, r> tc, ;
 : tl, ( addr word -- addr' )  >r r@ $10 rshift tw, r> tw, ;
 : t$, ( addr addr1 u1 -- addr' ) rot 2dup + >r swap move r> ;
+: tz, ( addr u -- addr' ) 2dup 0 fill + ;
 
 : ffmac, ( addr -- addr' )   6 0 DO  $FF tc,  LOOP ;
 
@@ -443,16 +444,12 @@ task: ethernet-task
 
 : rx-tail+ ( -- ) rx-tail @ desc-size + descs-mask and rx-tail ! ;
 
-: dump-rx ( addr u -- ) .packet cr ;
+: desc@ ( desc -- addr u )
+    >r r@ 8 + @ r> @ 16 rshift $3FFF and ;
 
-: dispatcher ( addr u type table -- )
-    16 cells bounds do
-	dup i @ = if
-	    drop  i cell+ @ execute  unloop  exit
-	then
-    2 cells  +loop  drop 2drop ;
+: dump-rx ( desc -- ) desc@ .packet cr ;
 
-: rx-ipv6 ( addr u -- )
+: rx-ipv6 ( desc -- )
     ." IPv6 packet received" cr dump-rx ;
 
 \ arp protocol: reply to requests (no caching and doing our own requests)
@@ -472,7 +469,7 @@ Variable arp#
 : >reply ( addr u -- addr u )
     over dup 6 + swap 6 move ;
 
-: rx-arp ( addr u -- ) over ether-header# + >r
+: rx-arp ( desc -- ) desc@ over ether-header# + >r
     r@ 2@ $01000406 $00080100 d= \ is it an arp request?
     IF  myip @ r@ 24 + @ =       \ is it actually for our IP?
 	IF \ arp request for us: do in-place reply
@@ -533,9 +530,8 @@ Variable arp#
 
 : ip-reply ( addr destaddr -- addr destaddr' )
     over eth-src over eth-dest 6 move eth-src ffmac,
-    $800 tw, over ip-version over 10 move 10 + 0 tw, \ checksum 0
-    myip over 4 move 4 +
-    over ip-src  over 4 move 4 + ;
+    $800 tw, over ip-version 10 t$, 0 tw, \ checksum 0
+    myip 4 t$, over ip-src 4 t$, ;
 
 \ : >carries ( n -- n' )
 \     dup 16 rshift swap $FFFF and + ;
@@ -629,6 +625,43 @@ true variable> flush-key?
     2 emit term-flush 1000 0 DO LOOP \ wait a bit
     token type term-flush ;
 
+\ DHCP, UDP port 58 (only discover+request)
+
+: chars, ( addr u -- )  bounds ?do  I c@ c,  LOOP ;
+
+$63825363 Constant dhcp-magic \ DHCP magic
+mymac 2@ xor Variable> dhcp-xid
+Create dhcp-head
+$45 c, $10 c, $00 c, $00 c,
+$00 c, $00 c, $40 c, $00 c,
+$40 c, $11 c,
+Create dhcp-discover
+53 c,  1 c, 1 c, \ message type: discover
+61 c,  7 c, mymac 6 chars, 0 c, \ again: my mac
+60 c, 13 c, char " parse net2o-ec 1.0" chars, 0 c, \ vendor id
+12 c,  9 c, char " parse net2o-ec" chars, 0 c, \ host id
+55 c,  6 c, 58 c, 59 c,  1 c, 28 c, 33 c, 3 c, \ parameter request list
+$FF c,
+here dhcp-discover - Constant dhcp-discover#
+
+: dhcp-request ( -- ) \ generate a useful dhcp request
+    1 dhcp-xid +! \ new "random" ID number
+    TX-Puffer
+    ffmac, ffmac, \ broadcast, my mac wird ersetzt
+    $0800 tw, \ IPv4
+    dhcp-head 10 t$, 0 tw, \ constant part of header
+    0 tl, -1 tl, \ my ip: 0.0.0.0, dest: 255.255.255.255
+    68 tw, 67 tw, 0 tw, 0 tw, \ DHCP ports + len + checksum
+    $01010600 tl, dhcp-xid @ tl,
+    20 tz, \ 20 bytes all zero are ok
+    mymac over 6 move 6 + 10 tz, \ 16 bytes for mac
+    192 tz, \ no server host name, no boot file
+    dhcp-magic tl,
+    dhcp-discover dhcp-discover# t$,
+    TX-Puffer udp-header# + tuck - TX-Puffer sendv ;
+
+\ UDP dispatcher
+
 : .udphdr ( addr len -- )
     ." UDP src:  " over udp-src  be-w@ . cr
     ." UDP dest: " over udp-dest be-w@ . cr ;
@@ -639,17 +672,22 @@ true variable> flush-key?
 ' .udppacket 0
 ' .udppacket 0
 ' .udppacket 0
-' .udppacket 0
-12 nvariable free-udpports
+10 nvariable free-udpports
 
+' .udppacket 68
 ' udp-data 4202
 ' udp-term 4201
-4 nvariable udpports
+6 nvariable udpports
 
 \ udp port dispatcher
 
 : udp-rx ( addr u -- )
-    over udp-dest be-w@ udpports dispatcher ;
+    over udp-dest be-w@
+    udpports 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop 2drop ;
 
 \ ip handler
 
@@ -665,8 +703,12 @@ true variable> flush-key?
 ' icmp-rx 1
 4 nvariable iptypes
 
-: rx-ip ( addr u -- )
-    over ip-protocol c@ iptypes dispatcher ;
+: rx-ip ( desc -- ) desc@ over ip-protocol c@
+    iptypes 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop .ippacket ;
 
 \ ethernet handler
 
@@ -682,11 +724,15 @@ true variable> flush-key?
 ' rx-ip   $0800
 6 nvariable ethertypes
 
-: desc@ ( desc -- addr u )
-    >r r@ 8 + @ r> @ 16 rshift $3FFF and ;
+: rx-ethertype ( descriptor ethertype -- )
+    ethertypes 16 cells bounds do
+	dup i @ = if
+	    drop  i cell+ @ execute  unloop  exit
+	then
+    2 cells  +loop  drop dump-rx ;
 
 : handle-rx ( descriptor -- )
-    desc@ over eth-type be-w@ ethertypes dispatcher ;
+    dup 8 + @ eth-type be-w@ rx-ethertype ;	
 
 : ether-loop ( -- )
     BEGIN

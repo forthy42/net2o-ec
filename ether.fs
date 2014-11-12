@@ -393,11 +393,10 @@ uniqueid3 3 + c@ c,
 $00 c, 
 $80 c,  \ use unique ID
 
-create myip   
-10 c, 
-0 c, 
-0 c, 
-mymac 5 + c@ c,
+mymac 5 + c@ 24 lshift 10 +
+Variable> myip \ in network byte order   
+
+3 cells buffer: routing \ router addr, subnet mask, broadcast address
 
 : tc, ( addr char -- addr' )  over c! 1+ ;
 : tw, ( addr word -- addr' )  >r r@ 8 rshift tc, r> tc, ;
@@ -516,6 +515,10 @@ Variable arp#
 : be-w! ( w addr -- )  over 8 rshift over c! 1+ c! ;
 : be-l@ ( addr -- l )  count >r count >r count >r c@
     r> 8 lshift or  r> 16 lshift or r> 24 lshift or ;
+: w>< ( x' -- x' ) \ swap two bytes be/le
+    dup 8 lshift swap 8 rshift $FF and or $FFFF and ;
+: l>< ( x -- x' ) \ swap four bytes be/le
+    dup 16 rshift w>< swap w>< 16 lshift or ;
 
 : .iphdr ( addr len -- addr len )  singletask
     ." IP packet received" cr
@@ -608,11 +611,14 @@ true variable> flush-key?
     emit-buffer emit-chars @ + c!
     1 emit-chars +!  emit-chars @ udp-max# u>=  IF  term-flush  THEN ;
 
-: udp-term ( addr u -- )
-    over term-hdr udp-reply 2drop
+: >udp-data ( addr u hdr -- addr' u' )
+    >r over r> udp-reply 2drop
     udp-header# - >r
     dup udp-len be-w@ 8 - r> umin >r \ careful: smaller limit wins!
-    udp-header# + inject-buffer r@ move
+    udp-header# + r> ;
+
+: udp-term ( addr u -- )  term-hdr >udp-data
+    >r inject-buffer r@ move
     inject-buffer r> inject-keys 2! ;
 
 : udp-io ( -- )
@@ -624,6 +630,11 @@ true variable> flush-key?
 : include ( "name" -- )  false flush-key? !
     2 emit term-flush 1000 0 DO LOOP \ wait a bit
     token type term-flush ;
+
+: .udphdr ( addr len -- )
+    ." UDP src:  " over udp-src  be-w@ . cr
+    ." UDP dest: " over udp-dest be-w@ . cr ;
+: .udppacket ( addr len -- )  .iphdr .udphdr .packet cr ;
 
 \ DHCP, UDP port 58 (only discover+request)
 
@@ -637,16 +648,17 @@ $00 c, $00 c, $40 c, $00 c,
 $40 c, $11 c,
 Create dhcp-discover
 53 c,  1 c, 1 c, \ message type: discover
-61 c,  7 c, mymac 6 chars, 0 c, \ again: my mac
-60 c, 13 c, char " parse net2o-ec 1.0" chars, 0 c, \ vendor id
-12 c,  9 c, char " parse net2o-ec" chars, 0 c, \ host id
+\ 61 c,  7 c, mymac 6 chars, 0 c, \ again: my mac
+\ 60 c, 13 c, char " parse net2o-ec 1.0" chars, 0 c, \ vendor id
+\ 12 c,  9 c, char " parse net2o-ec" chars, 0 c, \ host id
 55 c,  6 c, 58 c, 59 c,  1 c, 28 c, 33 c, 3 c, \ parameter request list
 $FF c,
 here dhcp-discover - Constant dhcp-discover#
 
-: dhcp-request ( -- ) \ generate a useful dhcp request
-    1 dhcp-xid +! \ new "random" ID number
-    TX-Puffer
+: new-dhcp ( -- )
+    1 dhcp-xid +! ; \ new "random" ID number
+
+: dhcp-part-1 ( start -- addr u )
     ffmac, ffmac, \ broadcast, my mac wird ersetzt
     $0800 tw, \ IPv4
     dhcp-head 10 t$, 0 tw, \ constant part of header
@@ -656,16 +668,85 @@ here dhcp-discover - Constant dhcp-discover#
     20 tz, \ 20 bytes all zero are ok
     mymac over 6 move 6 + 10 tz, \ 16 bytes for mac
     192 tz, \ no server host name, no boot file
-    dhcp-magic tl,
+    dhcp-magic tl, ;
+
+: dhcp-discover ( -- ) \ generate a dhcp discover
+    TX-Puffer dhcp-part-1
     dhcp-discover dhcp-discover# t$,
     TX-Puffer udp-header# + tuck - TX-Puffer sendv ;
 
-\ UDP dispatcher
+Variable dhcp-server-ip
 
-: .udphdr ( addr len -- )
-    ." UDP src:  " over udp-src  be-w@ . cr
-    ." UDP dest: " over udp-dest be-w@ . cr ;
-: .udppacket ( addr len -- )  .iphdr .udphdr .packet cr ;
+: dhcp-request ( ip -- ) >r \ generate a dhcp request
+    TX-Puffer dhcp-part-1
+    dhcp-server-ip @ TX-Puffer $3E + !
+    r@ l>< TX-Puffer $3A + !
+    53 tc, 1 tc, 3 tc, \ message type: request
+    50 tc, 4 tc, r> tl,
+    51 tc, 4 tc, 24 60 60 * * tl, \ request for a day
+    54 tc, 4 tc, dhcp-server-ip be-l@ tl,
+    $FF tc,
+    TX-Puffer udp-header# + tuck - TX-Puffer sendv ;
+
+Variable lease-time
+10 Variable> lease-threshold
+Variable dhcp-type
+
+: next-dhcp ( addr u -- addr' u' )
+    over 1+ c@ 2 + /string ;
+: dhcp-options ( addr u -- )  -1 dhcp-type !
+    BEGIN
+	case  over c@
+	    51 of  over 2 + be-l@ 2* dup lease-time !
+		3 rshift lease-threshold !  endof
+	    53 of  over 2 + c@ dhcp-type !  endof
+	    54 of  over 2 + @ dhcp-server-ip !  endof
+	    3  of  over 2 + @ routing !  endof
+	    1  of  over 2 + @ routing cell+ !  endof
+	    28 of  over 2 + @ routing cell+ cell+ !  endof
+	    $FF of  2drop  EXIT  endof
+	endcase
+	next-dhcp
+    dup 1- 0< UNTIL  2drop ;
+
+: dhcp-offer ( addr u -- ) \ receive the offer
+    udp-header# /string
+    dup $F0 u<= IF
+	." DHCP too short" cr  2drop EXIT  THEN
+    over c@ 2 <> IF  2drop EXIT  THEN \ not an offer
+    \    over $EC + be-l@ dhcp-magic <>
+    \ IF  ." Wrong magic" cr  2drop EXIT  THEN \ not dhcp
+    \    over cell+ be-l@ dhcp-xid @ <> IF
+    \ ." not our request: " over cell+ be-l@ u. cr
+    \ .packet  EXIT  THEN \ not our request
+    over $10 + be-l@ >r
+    $F0 /string  dhcp-options
+    case  dhcp-type @
+	2 of  r@ dhcp-request  endof
+	5 of  r@ l>< myip !  new-dhcp
+	    routing be-l@ req-arp  endof \ ack
+	6 of  0 lease-time !  new-dhcp  endof \ nack
+    endcase  rdrop ;
+
+-1 variable> last-tick
+0 variable> sys-tick
+
+: 2hz-tick  ( -- ) 1 sys-tick +! ;
+
+: 2hz-clock ( -- ) 
+    ['] 2hz-tick irq-systick !
+    12500000 systick \ we run at 25MHz with Ethernet
+    eint ;
+
+: dhcp-tick ( -- )
+    last-tick @ sys-tick @ dup last-tick ! -
+    lease-time +!
+    lease-time @ 0< IF  dhcp-discover  EXIT  THEN
+    lease-time @ lease-threshold @ < IF
+	myip be-l@ dhcp-request
+    THEN ;
+
+\ UDP dispatcher
 
 ' .udppacket 0
 ' .udppacket 0
@@ -674,7 +755,7 @@ here dhcp-discover - Constant dhcp-discover#
 ' .udppacket 0
 10 nvariable free-udpports
 
-' .udppacket 68
+' dhcp-offer 68
 ' udp-data 4202
 ' udp-term 4201
 6 nvariable udpports
@@ -683,6 +764,7 @@ here dhcp-discover - Constant dhcp-discover#
 
 : udp-rx ( addr u -- )
     over udp-dest be-w@
+    \ ." udp packet port: " dup . cr
     udpports 16 cells bounds do
 	dup i @ = if
 	    drop  i cell+ @ execute  unloop  exit
@@ -704,6 +786,7 @@ here dhcp-discover - Constant dhcp-discover#
 4 nvariable iptypes
 
 : rx-ip ( desc -- ) desc@ over ip-protocol c@
+    \ ." ip packet type: " dup . cr
     iptypes 16 cells bounds do
 	dup i @ = if
 	    drop  i cell+ @ execute  unloop  exit
@@ -734,9 +817,14 @@ here dhcp-discover - Constant dhcp-discover#
 : handle-rx ( descriptor -- )
     dup 8 + @ eth-type be-w@ rx-ethertype ;	
 
+: sys-tick? ( -- )
+    sys-tick @ last-tick @ <> IF
+	dhcp-tick
+    THEN ;
+
 : ether-loop ( -- )
     BEGIN
-	BEGIN  pause  RX-Descriptor' @ own and 0=  UNTIL
+	BEGIN  pause  sys-tick?  RX-Descriptor' @ own and 0=  UNTIL
 	
 	RX-Descriptor' dup >r handle-rx
 	r> 8 + @ ether-size rx-buffer+
@@ -862,12 +950,14 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   1 21 lshift 1 13 lshift or 2 or EMACDMAOPMODE ! ;
 
 : init ( -- )
-    init
-    clocks-enable  descs-setup  enable-emac
+    init  0 term-hdr !
+    clocks-enable
+    descs-setup  enable-emac
     reset-emac  emac-leds  emac-irqs  emac-init
     \ start background task
     ethernet& udp-io
     ." Mecrisp-Stellaris ethernet terminal ready" cr
+    2hz-clock
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.

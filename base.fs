@@ -162,11 +162,3 @@ $E000E18C constant dis3 ( Interrupt Clear Enable 96-127 )
 
 compiletoram
 init
-
-: tick  ( -- ) ." Tick" cr ;
-
-: clock ( -- ) 
-  ['] tick irq-systick !
-  systick-1Hz
-  eint
-;

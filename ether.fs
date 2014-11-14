@@ -531,6 +531,18 @@ Variable arp#
 
 : .ippacket ( addr len -- )  .iphdr .packet cr ;
 
+\ systick
+
+-1 variable> last-tick
+0 variable> sys-tick
+
+: 2hz-tick  ( -- ) 1 sys-tick +! ;
+
+: 2hz-clock ( -- ) 
+    ['] 2hz-tick irq-systick !
+    12500000 systick \ we run at 25MHz with Ethernet
+    eint ;
+
 \ IP routing
 
 : ip>lan ( ip -- ip' ) \ if routable, replace by default GW
@@ -551,10 +563,13 @@ $8000 variable> udp-myport# \ user-specified ports...
     ip-hdr-template r@ 6 +  20 move \ default flags
     myip @ r@ ip-src !
     l>< dup r@ ip-dest ! ip>lan
+    3 >r \ four tries before giving up
     BEGIN  dup ip>mac dup 0= WHILE  drop
-	    rx-tail @ >r dup l>< req-arp
-	    BEGIN  pause rx-tail @ r@ <>  UNTIL  rdrop
-    REPEAT  r> 6 move drop ;
+	    dup l>< req-arp  sys-tick @ rx-tail @
+	    BEGIN  pause 2dup sys-tick @ rx-tail @ d<>  UNTIL  2drop
+	    r> 1- dup >r 0< IF  -37 throw  THEN
+    REPEAT  rdrop
+    r> 6 move drop ;
 
 : udp-socket ( ip port addr -- source-port ) >r
     swap \ ip is in host byte order
@@ -763,16 +778,6 @@ Variable dhcp-type
 	    routing be-l@ req-arp  endof \ ack
 	6 of  0 lease-time !  new-dhcp  endof \ nack
     endcase  rdrop ;
-
--1 variable> last-tick
-0 variable> sys-tick
-
-: 2hz-tick  ( -- ) 1 sys-tick +! ;
-
-: 2hz-clock ( -- ) 
-    ['] 2hz-tick irq-systick !
-    12500000 systick \ we run at 25MHz with Ethernet
-    eint ;
 
 : dhcp-tick ( -- )
     last-tick @ sys-tick @ dup last-tick ! -

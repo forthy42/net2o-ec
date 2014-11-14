@@ -545,22 +545,25 @@ $45 c, $00 c, $00 c, $00 c, \ ip-version, ip-tos, ip-len
 $00 c, $00 c, $40 c, $00 c, \ ip-id, ip-frag
 $40 c, $00 c, $00 c, $00 c, \ ip-ttl, ip-protocol, ip-checksum
 
-1025 variable> udp-myport#
+$8000 variable> udp-myport# \ user-specified ports...
 
-: udp-socket ( ip port addr -- source-port ) >r
-    \ ip is in host byte order
+: ip-socket ( ip addr -- ) >r
     ip-hdr-template r@ 6 +  20 move \ default flags
-    17 r@ ip-protocol c! \ set protocol to UDP
-    r@ udp-dest be-w! \ dest port
-    udp-myport# @ r@ udp-src be-w! \ generate new source port
-    0 r@ udp-len !
     myip @ r@ ip-src !
     l>< dup r@ ip-dest ! ip>lan
     BEGIN  dup ip>mac dup 0= WHILE  drop
 	    rx-tail @ >r dup l>< req-arp
 	    BEGIN  pause rx-tail @ r@ <>  UNTIL  rdrop
-    REPEAT  r> 6 move drop
-    udp-myport# @ 1 udp-myport# +! ;
+    REPEAT  r> 6 move drop ;
+
+: udp-socket ( ip port addr -- source-port ) >r
+    swap \ ip is in host byte order
+    r@ ip-socket
+    17 r@ ip-protocol c! \ set protocol to UDP
+    0 r@ udp-len !
+    r@ udp-dest be-w! \ dest port
+    udp-myport# @ dup r> udp-src be-w! \ generate new source port
+    1 udp-myport# +! ;
 
 \ icmp
 

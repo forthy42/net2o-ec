@@ -460,7 +460,7 @@ Variable arp#
 : arp-cache+ ( addr u -- )
     arp-cache arp# @ + swap move
     /arp arp# @ + dup /arp arp-cache# * u< and arp# ! ;
-: ip>mac ( ip-addr -- macaddr/0 )  @
+: ip>mac ( ip-addr -- macaddr/0 ) \ look up MAC for IP in ARP cache
     arp-cache /arp arp-cache# * bounds DO
 	dup i 6 + @ = IF  drop I  UNLOOP  EXIT  THEN
     /arp +LOOP  drop 0 ;
@@ -515,6 +515,8 @@ Variable arp#
 : be-w! ( w addr -- )  over 8 rshift over c! 1+ c! ;
 : be-l@ ( addr -- l )  count >r count >r count >r c@
     r> 8 lshift or  r> 16 lshift or r> 24 lshift or ;
+: be-l! ( l addr -- ) \ store l in network byte order
+    over 16 rshift over be-w!  2 + be-w! ;
 : w>< ( x' -- x' ) \ swap two bytes be/le
     dup 8 lshift swap 8 rshift $FF and or $FFFF and ;
 : l>< ( x -- x' ) \ swap four bytes be/le
@@ -528,6 +530,37 @@ Variable arp#
     r> ;
 
 : .ippacket ( addr len -- )  .iphdr .packet cr ;
+
+\ IP routing
+
+: ip>lan ( ip -- ip' ) \ if routable, replace by default GW
+    dup routing 2@ over and >r and r> <> IF
+	drop routing @
+    THEN ;
+
+Create ip-hdr-template
+$FF c, $FF c, $FF c, $FF c, $FF c, $FF c, \ will be replaced with my mac
+$08 c, $00 c, \ protocol: IP
+$45 c, $00 c, $00 c, $00 c, \ ip-version, ip-tos, ip-len
+$00 c, $00 c, $40 c, $00 c, \ ip-id, ip-frag
+$40 c, $00 c, $00 c, $00 c, \ ip-ttl, ip-protocol, ip-checksum
+
+1025 variable> udp-myport#
+
+: udp-socket ( ip port addr -- source-port ) >r
+    \ ip is in host byte order
+    ip-hdr-template r@ 6 +  20 move \ default flags
+    17 r@ ip-protocol c! \ set protocol to UDP
+    r@ udp-dest be-w! \ dest port
+    udp-myport# @ r@ udp-src be-w! \ generate new source port
+    0 r@ udp-len !
+    myip @ r@ ip-src !
+    l>< dup r@ ip-dest ! ip>lan
+    BEGIN  dup ip>mac dup 0= WHILE  drop
+	    rx-tail @ >r dup l>< req-arp
+	    BEGIN  pause rx-tail @ r@ <>  UNTIL  rdrop
+    REPEAT  r> 6 move drop
+    udp-myport# @ 1 udp-myport# +! ;
 
 \ icmp
 
@@ -877,7 +910,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
 
     1 RCGCEMAC !  1 RCGCEPHY ! ;
 
-: descs-setup ( -- )
+: descs-setup ( -- )  0 term-hdr !
     RX-Descriptors desc-size descs# * 0 fill
     TX-Descriptors desc-size txdescs# * 0 fill
     arp-cache /arp arp-cache# *       0 fill
@@ -950,7 +983,7 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   1 21 lshift 1 13 lshift or 2 or EMACDMAOPMODE ! ;
 
 : init ( -- )
-    init  0 term-hdr !
+    init
     clocks-enable
     descs-setup  enable-emac
     reset-emac  emac-leds  emac-irqs  emac-init

@@ -46,7 +46,7 @@ Variable key$ \ string for all keys in a row
 	4   of  -28 throw  endof \ ^d terminates
 	dup endcase ;
 
-: read-keys ( -- )   key key-translate key$ c$+!
+: read-keys ( -- )   key key-translate key$ c$+!  10 ms
     BEGIN  key?  WHILE  key key-translate key$ c$+!  REPEAT ;
 
 2variable ptimeout #100000000 0 ptimeout 2!

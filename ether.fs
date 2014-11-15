@@ -534,14 +534,6 @@ Variable arp#
 \ systick
 
 -1 variable> last-tick
-0 variable> sys-tick
-
-: 2hz-tick  ( -- ) 1 sys-tick +! ;
-
-: 2hz-clock ( -- ) 
-    ['] 2hz-tick irq-systick !
-    12500000 systick \ we run at 25MHz with Ethernet
-    eint ;
 
 \ IP routing
 
@@ -565,8 +557,8 @@ $8000 variable> udp-myport# \ user-specified ports...
     l>< dup r@ ip-dest ! ip>lan
     3 >r \ four tries before giving up
     BEGIN  dup ip>mac dup 0= WHILE  drop
-	    dup l>< req-arp  sys-tick @ rx-tail @
-	    BEGIN  pause 2dup sys-tick @ rx-tail @ d<>  UNTIL  2drop
+	    dup l>< req-arp  EMACTIMSEC @ rx-tail @
+	    BEGIN  pause 2dup EMACTIMSEC @ rx-tail @ d<>  UNTIL  2drop
 	    r> 1- dup >r 0< IF  -37 throw  THEN
     REPEAT  rdrop
     r> 6 move drop ;
@@ -748,7 +740,7 @@ Variable dhcp-type
 : dhcp-options ( addr u -- )  -1 dhcp-type !
     BEGIN
 	case  over c@
-	    51 of  over 2 + be-l@ 2* dup lease-time !
+	    51 of  over 2 + be-l@ dup lease-time !
 		3 rshift lease-threshold !  endof
 	    53 of  over 2 + c@ dhcp-type !  endof
 	    54 of  over 2 + @ dhcp-server-ip !  endof
@@ -780,7 +772,7 @@ Variable dhcp-type
     endcase  rdrop ;
 
 : dhcp-tick ( -- )
-    last-tick @ sys-tick @ dup last-tick ! -
+    last-tick @ EMACTIMSEC @ dup last-tick ! -
     lease-time +!
     lease-time @ 0< IF  dhcp-discover  EXIT  THEN
     lease-time @ lease-threshold @ < IF
@@ -859,7 +851,7 @@ Variable dhcp-type
     dup 8 + @ eth-type be-w@ rx-ethertype ;	
 
 : sys-tick? ( -- )
-    sys-tick @ last-tick @ <> IF
+    EMACTIMSEC @ last-tick @ <> IF
 	dhcp-tick
     THEN ;
 
@@ -990,15 +982,20 @@ PORTF_BASE $52C + constant PORTF_PCTL   ( Pin Control )
   \ Hardwired to Full-Duplex, store&forward, 100 Mbps here.
   1 21 lshift 1 13 lshift or 2 or EMACDMAOPMODE ! ;
 
+: emactime-init ( -- )
+    1 18 lshift EMACCC !
+    40 EMACSUBSECINC !
+    $305 EMACTIMSTCTRL !
+;
+
 : init ( -- )
     init
     clocks-enable
     descs-setup  enable-emac
     reset-emac  emac-leds  emac-irqs  emac-init
     \ start background task
-    ethernet& udp-io
+    ethernet& udp-io  emactime-init
     ." Mecrisp-Stellaris ethernet terminal ready" cr
-    2hz-clock
 ;
 
 \ Die Link-OK LED (D3) leuchtet jetzt, und die TX/RX-Aktivitätsled (D4) blinkert bei Paketen auf der Leitung.
